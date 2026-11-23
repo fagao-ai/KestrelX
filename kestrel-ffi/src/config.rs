@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use kestrel::mcp::{McpClient, McpServerConfig};
+use kestrel::mcp::{McpClient, McpHttpClient, McpHttpConfig, McpServerConfig};
 use kestrel::skills::SkillRegistry;
 use kestrel::{
     Agent, AgentConfig, EventSink, InMemoryMemory, Memory, MemoryOptions, Model, OpenAiCompatible,
@@ -18,7 +18,26 @@ use crate::{
 pub(crate) struct BuiltAgent {
     pub(crate) agent: Agent,
     pub(crate) todos: Option<TodoList>,
-    pub(crate) mcp_clients: Vec<McpClient>,
+    pub(crate) mcp_clients: Vec<McpConnection>,
+}
+
+#[derive(Clone)]
+pub(crate) enum McpConnection {
+    Stdio(McpClient),
+    Http(McpHttpClient),
+}
+
+impl McpConnection {
+    pub(crate) async fn close(&self) {
+        match self {
+            Self::Stdio(client) => {
+                let _ = client.close().await;
+            }
+            Self::Http(client) => {
+                let _ = client.close().await;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -342,9 +361,11 @@ impl Default for SkillsSettings {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct McpServerSettings {
+    pub(crate) url: Option<String>,
     pub(crate) command: String,
     pub(crate) args: Vec<String>,
     pub(crate) env: BTreeMap<String, String>,
+    pub(crate) headers: BTreeMap<String, String>,
     pub(crate) cwd: Option<String>,
     pub(crate) request_timeout_seconds: Option<u64>,
     pub(crate) protocol_version: Option<String>,
@@ -366,7 +387,7 @@ fn load_skills(settings: &SkillsSettings) -> std::result::Result<SkillRegistry, 
     Ok(combined)
 }
 
-type ConnectedMcp = (Vec<McpClient>, Vec<Arc<dyn kestrel::Tool>>);
+type ConnectedMcp = (Vec<McpConnection>, Vec<Arc<dyn kestrel::Tool>>);
 
 fn connect_mcp_servers(servers: &[McpServerSettings]) -> std::result::Result<ConnectedMcp, String> {
     if servers.is_empty() {
@@ -377,41 +398,74 @@ fn connect_mcp_servers(servers: &[McpServerSettings]) -> std::result::Result<Con
         let mut clients = Vec::new();
         let mut tools = Vec::new();
         for server in servers {
-            if server.command.trim().is_empty() {
-                return Err("MCP server command must not be empty".to_owned());
-            }
-            let mut config = McpServerConfig::new(&server.command).args(server.args.clone());
-            for (key, value) in &server.env {
-                config = config.env(key, value);
-            }
-            if let Some(cwd) = server.cwd {
-                config = config.cwd(cwd);
-            }
-            if let Some(seconds) = server.request_timeout_seconds {
-                if seconds == 0 {
-                    return Err("MCP request_timeout_seconds must be greater than zero".to_owned());
+            if let Some(url) = server.url {
+                let mut config = McpHttpConfig::new(url);
+                config.headers = server.headers.clone();
+                if let Some(seconds) = server.request_timeout_seconds {
+                    if seconds == 0 {
+                        return Err(
+                            "MCP request_timeout_seconds must be greater than zero".to_owned()
+                        );
+                    }
+                    config = config.request_timeout(Duration::from_secs(seconds));
                 }
-                config = config.request_timeout(Duration::from_secs(seconds));
-            }
-            if let Some(version) = server.protocol_version {
-                config = config.protocol_version(version);
-            }
-            if let Some(name) = server.client_name {
-                config.client_name = name;
-            }
-            if let Some(version) = server.client_version {
-                config.client_version = version;
-            }
+                if let Some(version) = server.protocol_version {
+                    config = config.protocol_version(version);
+                }
+                if let Some(name) = server.client_name {
+                    config.client_name = name;
+                }
+                if let Some(version) = server.client_version {
+                    config.client_version = version;
+                }
+                let client = McpHttpClient::connect(config)
+                    .await
+                    .map_err(|error| format!("MCP HTTP connect failed: {error}"))?;
+                let discovered = client
+                    .tools()
+                    .await
+                    .map_err(|error| format!("MCP HTTP tools/list failed: {error}"))?;
+                tools.extend(discovered);
+                clients.push(McpConnection::Http(client));
+            } else {
+                if server.command.trim().is_empty() {
+                    return Err("MCP server command or url must be provided".to_owned());
+                }
+                let mut config = McpServerConfig::new(&server.command).args(server.args.clone());
+                for (key, value) in &server.env {
+                    config = config.env(key, value);
+                }
+                if let Some(cwd) = server.cwd {
+                    config = config.cwd(cwd);
+                }
+                if let Some(seconds) = server.request_timeout_seconds {
+                    if seconds == 0 {
+                        return Err(
+                            "MCP request_timeout_seconds must be greater than zero".to_owned()
+                        );
+                    }
+                    config = config.request_timeout(Duration::from_secs(seconds));
+                }
+                if let Some(version) = server.protocol_version {
+                    config = config.protocol_version(version);
+                }
+                if let Some(name) = server.client_name {
+                    config.client_name = name;
+                }
+                if let Some(version) = server.client_version {
+                    config.client_version = version;
+                }
 
-            let client = McpClient::connect(config)
-                .await
-                .map_err(|error| format!("MCP connect failed: {error}"))?;
-            let discovered = client
-                .tools()
-                .await
-                .map_err(|error| format!("MCP tools/list failed: {error}"))?;
-            tools.extend(discovered);
-            clients.push(client);
+                let client = McpClient::connect(config)
+                    .await
+                    .map_err(|error| format!("MCP connect failed: {error}"))?;
+                let discovered = client
+                    .tools()
+                    .await
+                    .map_err(|error| format!("MCP tools/list failed: {error}"))?;
+                tools.extend(discovered);
+                clients.push(McpConnection::Stdio(client));
+            }
         }
         Ok((clients, tools))
     })?

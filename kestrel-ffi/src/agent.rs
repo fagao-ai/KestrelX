@@ -7,7 +7,6 @@ use std::{
     },
 };
 
-use kestrel::mcp::McpClient;
 use kestrel::{
     Agent, AgentOutput, Memory, Message, Model, RunOptions, Session, SessionStore, TodoList,
 };
@@ -19,7 +18,7 @@ use crate::{
         CallbackTracker, EventCallback, EventCallbackFn, ModelCallback, ModelCallbackFn,
         StreamingModelCallback, StreamingModelCallbackFn, ToolCallback, ToolCallbackFn,
     },
-    config::Settings,
+    config::{McpConnection, Settings},
     event::{CallbackEventSink, EventSlot},
     ffi_catch,
     runtime::block_on,
@@ -32,7 +31,7 @@ pub struct KestrelAgent {
     pub(crate) inner: Agent,
     pub(crate) events: EventSlot,
     pub(crate) todos: Option<TodoList>,
-    pub(crate) mcp_clients: Vec<McpClient>,
+    pub(crate) mcp_clients: Vec<McpConnection>,
     tracker: Arc<CallbackTracker>,
     running: Arc<AtomicBool>,
     cancellation: Arc<Mutex<Option<CancellationToken>>>,

@@ -1,4 +1,4 @@
-//! Optional Model Context Protocol integration over stdio.
+//! Optional Model Context Protocol integration over stdio or Streamable HTTP.
 //!
 //! This module only adapts MCP tools to the `Tool` trait. It is feature-gated
 //! and has no presence in the core dependency graph unless enabled.
@@ -25,6 +25,10 @@ use tokio::{
 };
 
 use crate::{Error, Result, Tool, ToolContext, ToolOutput, ToolSpec};
+
+mod http;
+
+pub use http::{McpHttpClient, McpHttpConfig};
 
 /// Configuration for one MCP server process.
 #[derive(Clone)]
@@ -429,7 +433,7 @@ async fn read_response(transport: &mut StdioTransport, id: u64) -> Result<Value>
     }
 }
 
-fn render_tool_result(result: &Value) -> ToolOutput {
+pub(super) fn render_tool_result(result: &Value) -> ToolOutput {
     let is_error = result
         .get("isError")
         .and_then(Value::as_bool)
@@ -487,7 +491,7 @@ fn render_tool_result(result: &Value) -> ToolOutput {
     }
 }
 
-fn sanitize_tool_name(name: &str) -> String {
+pub(super) fn sanitize_tool_name(name: &str) -> String {
     let mut sanitized = name
         .chars()
         .take(64)
@@ -506,19 +510,19 @@ fn sanitize_tool_name(name: &str) -> String {
 }
 
 #[derive(Deserialize)]
-struct ListToolsResult {
+pub(super) struct ListToolsResult {
     #[serde(default)]
-    tools: Vec<RemoteTool>,
+    pub(super) tools: Vec<RemoteTool>,
     #[serde(default, rename = "nextCursor")]
-    next_cursor: Option<String>,
+    pub(super) next_cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
-struct RemoteTool {
-    name: String,
-    description: Option<String>,
+pub(super) struct RemoteTool {
+    pub(super) name: String,
+    pub(super) description: Option<String>,
     #[serde(default, rename = "inputSchema")]
-    input_schema: Option<Value>,
+    pub(super) input_schema: Option<Value>,
 }
 
 #[cfg(test)]

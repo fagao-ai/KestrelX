@@ -2,7 +2,8 @@ use std::{
     collections::{HashMap, VecDeque},
     ffi::{CStr, CString, c_char, c_int, c_void},
     fs,
-    process::Command,
+    io::{BufRead, BufReader},
+    process::{Command, Stdio},
     ptr,
     sync::{Barrier, Mutex, mpsc},
     time::Duration,
@@ -752,6 +753,171 @@ for line in sys.stdin:
     assert_eq!(tool_result["content"][0]["text"], "mcp:hello");
     // SAFETY: no run is active; this also closes MCP child processes.
     unsafe { kestrel_agent_free(agent) };
+}
+
+#[test]
+fn connects_streamable_http_mcp_server() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        return;
+    }
+    let server = r#"
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *_args):
+        pass
+    def send_json(self, status, body=None, session=False):
+        payload = b"" if body is None else json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        if session:
+            self.send_header("Mcp-Session-Id", "http-session-1")
+        self.end_headers()
+        self.wfile.write(payload)
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        request = json.loads(self.rfile.read(length) or b"{}")
+        method = request.get("method")
+        if method == "initialize":
+            self.send_json(200, {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "http-mock", "version": "1"},
+                },
+            }, True)
+        elif "id" not in request:
+            self.send_json(202)
+        elif method == "tools/list":
+            self.send_json(200, {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {"tools": [{
+                    "name": "echo",
+                    "description": "Echo via HTTP MCP",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                }]},
+            })
+        elif method == "tools/call":
+            arguments = request.get("params", {}).get("arguments", {})
+            response = json.dumps({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": "mcp-http:" + str(arguments.get("text", "")),
+                    }],
+                    "isError": False,
+                },
+            })
+            payload = ("event: message\ndata: " + response + "\n\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        else:
+            self.send_json(200, {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {},
+            })
+    def do_DELETE(self):
+        self.send_json(204)
+
+server = HTTPServer(("127.0.0.1", 0), Handler)
+print(server.server_address[1], flush=True)
+server.serve_forever()
+"#;
+    let mut child = Command::new("python3")
+        .args(["-u", "-c", server])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut line = String::new();
+    BufReader::new(stdout).read_line(&mut line).unwrap();
+    let port = line.trim();
+    assert!(!port.is_empty(), "mock HTTP MCP server did not start");
+
+    let model_state = Box::new(ModelState {
+        responses: Mutex::new(VecDeque::from([
+            serde_json::to_string(&ModelResponse {
+                message: Message::assistant_with_tool_calls(
+                    "",
+                    vec![ToolCall {
+                        id: "http-call".to_owned(),
+                        name: "echo".to_owned(),
+                        arguments: json!({ "text": "hello" }),
+                    }],
+                ),
+                finish_reason: FinishReason::ToolCalls,
+                usage: Usage::default(),
+                model: Some("callback".to_owned()),
+                raw: None,
+            })
+            .unwrap(),
+            serde_json::to_string(&ModelResponse {
+                message: Message::assistant("http mcp complete"),
+                finish_reason: FinishReason::Stop,
+                usage: Usage::default(),
+                model: Some("callback".to_owned()),
+                raw: None,
+            })
+            .unwrap(),
+        ])),
+        requests: Mutex::new(Vec::new()),
+    });
+    let config = CString::new(
+        json!({
+            "openai": { "model": "callback" },
+            "mcp_servers": [{
+                "url": format!("http://127.0.0.1:{port}/mcp")
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut error = ptr::null_mut();
+    // SAFETY: model state outlives the agent.
+    let agent = unsafe {
+        kestrel_agent_new_with_model(
+            config.as_ptr(),
+            Some(model_callback),
+            (&*model_state as *const ModelState).cast_mut().cast(),
+            &mut error,
+        )
+    };
+    assert!(!agent.is_null(), "{}", error_message(error));
+    let prompt = CString::new("use http mcp").unwrap();
+    // SAFETY: agent and prompt are valid.
+    let output = unsafe { kestrel_agent_run(agent, prompt.as_ptr(), &mut error) };
+    assert!(!output.is_null(), "{}", error_message(error));
+    // SAFETY: output is owned by this call.
+    unsafe { kestrel_string_free(output) };
+
+    let requests = model_state.requests.lock().unwrap();
+    let tool_result = requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .unwrap();
+    assert_eq!(tool_result["content"][0]["text"], "mcp-http:hello");
+    // SAFETY: no run is active; this also terminates the HTTP session.
+    unsafe { kestrel_agent_free(agent) };
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[test]

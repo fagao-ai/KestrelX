@@ -71,7 +71,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     /// A request to a model provider failed.
-    #[cfg(feature = "openai")]
+    #[cfg(any(feature = "mcp", feature = "openai"))]
     #[error(transparent)]
     Http(#[from] reqwest::Error),
 }

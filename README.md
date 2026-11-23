@@ -237,7 +237,7 @@ OpenAI 流式 usage 默认为开启；兼容服务不支持 `stream_options` 时
 | `openai` | 是 | OpenAI-compatible Chat Completions provider |
 | `todo` | 是 | `TodoList`、`todo_write`、`todo_read` |
 | `subagent` | 是 | `SubAgentTool`，每次调用使用隔离会话 |
-| `mcp` | 否 | stdio MCP client，将远端 tools 映射为 `Tool` |
+| `mcp` | 否 | stdio / Streamable HTTP MCP client |
 | `skills` | 否 | `SKILL.md` 发现、catalog prompt、`read_skill` |
 | `full` | 否 | 启用以上全部 |
 
@@ -277,7 +277,8 @@ agent.register_tool(Arc::new(delegate))?;
 
 ### MCP
 
-当前实现支持 **stdio** transport，包含 initialize、tools/list 分页和 tools/call：
+当前支持 **stdio** 和 **Streamable HTTP**，两者都包含 initialize、tools/list 分页和
+tools/call：
 
 ```rust
 use kestrel::mcp::{McpClient, McpServerConfig};
@@ -292,8 +293,21 @@ let agent = Agent::builder(model).tools(tools).build()?;
 // client.close().await?;
 ```
 
-MCP 工具名会规范化为模型友好的字符集，调用时仍映射回原始远端名称。HTTP transport、
-sampling、roots 等高级能力不在当前 MVP 内。
+HTTP endpoint：
+
+```rust
+use kestrel::mcp::{McpHttpClient, McpHttpConfig};
+
+let client = McpHttpClient::connect(
+    McpHttpConfig::new("https://example.com/mcp")
+        .header("Authorization", "Bearer ..."),
+).await?;
+let tools = client.tools().await?;
+```
+
+MCP 工具名会规范化为模型友好的字符集，调用时仍映射回原始远端名称。Streamable HTTP
+支持 JSON 和 SSE 响应、session header、协议版本 header 和 DELETE 会话终止；sampling、
+roots 及服务端发起的请求仍不在当前实现内。
 
 ### Skills
 
@@ -338,8 +352,8 @@ cargo build -p kestrel-ffi --release
   "skills": { "paths": ["./skills"], "max_depth": 4 },
   "mcp_servers": [
     {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ..." },
       "request_timeout_seconds": 30
     }
   ],
@@ -356,8 +370,9 @@ cargo build -p kestrel-ffi --release
 `kestrel_agent_new_with_streaming_model` 或 Python `stream_model`，生成过程中调用
 传入的 `emit` 推送 `ModelDelta`。
 
-`skills` 会在构造时加载并注入 catalog/`read_skill`；`mcp_servers` 会连接 stdio MCP
-并在构造时发现远端工具。包含 MCP 的构造会阻塞，且不能从 Tokio runtime 线程调用。
+`skills` 会在构造时加载并注入 catalog/`read_skill`；`mcp_servers` 会连接 stdio 或
+Streamable HTTP MCP 并在构造时发现远端工具。包含 MCP 的构造会阻塞，且不能从 Tokio
+runtime 线程调用。
 
 `bindings/python/kestrel.py` 是可直接使用的 ctypes 参考绑定：
 
@@ -383,12 +398,11 @@ bindings/python     # ctypes 参考 SDK
 - OpenAI provider 和自定义 streaming model callback 都支持 token/tool-call 增量。
 - 单一模型调用内不并发执行工具，保证结果顺序和错误语义简单可预测。
 - OpenAI provider 使用 Chat Completions 兼容协议，不覆盖 Responses API。
-- MCP 仅 stdio；Skills 使用简化 frontmatter 解析。
+- MCP 支持 stdio 与 Streamable HTTP；sampling/roots 和 server-initiated requests 尚未支持。
 - FFI 同时提供同步 `run` 和异步 `start_run`；异步 handle 的 `poll/wait` 本身是同步
   C 调用，语言 SDK 应放到 worker 或 executor。
 - FFI 的 tool callback 是同步回调；取消无法中断已经进入宿主 callback 的调用，但 run 会等
   在途 callback 返回后才报告取消，确保 `user_data` 生命周期安全。
-- 核心和 FFI 的 MCP 目前都只支持 stdio，尚未实现 HTTP transport。
 - 会话压缩会更新持久化历史；如需保留完整审计日志，应在 SessionStore 外单独存 event/audit。
 - 摘要压缩的额外模型调用，以及子 agent 的 token 用量，不计入父级 `AgentOutput.usage`。
 
@@ -424,7 +438,7 @@ src/
   openai.rs     # 可选 OpenAI-compatible provider
   todo.rs       # 可选 Todo
   subagent.rs   # 可选子 agent 工具
-  mcp/          # 可选 stdio MCP
+  mcp/          # 可选 stdio / Streamable HTTP MCP
   skills/       # 可选 SKILL.md 加载
 kestrel-ffi/
   include/      # C header

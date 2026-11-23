@@ -92,6 +92,11 @@ also be freed with `kestrel_string_free`.
       "request_timeout_seconds": 30,
       "protocol_version": "2025-06-18",
       "client_name": "kestrel"
+    },
+    {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ..." },
+      "request_timeout_seconds": 30
     }
   ],
   "openai": {
@@ -109,8 +114,8 @@ also be freed with `kestrel_string_free`.
 back to `OPENAI_API_KEY` and `OPENAI_BASE_URL`.
 
 `skills.paths` may contain multiple directories; duplicate skill names are
-rejected. `mcp_servers` only supports stdio in the current release and connects
-during agent construction. Agent construction with MCP blocks and must not run
+rejected. Each `mcp_servers` entry uses `url` for Streamable HTTP or `command`
+for stdio. MCP connects during agent construction, which blocks and must not run
 on a Tokio runtime thread.
 
 For `kestrel_agent_new_with_model`, `openai.model` is only used as the model's
@@ -276,7 +281,8 @@ Custom models can stream through `stream_model=callback(request, emit)`.
 
 ## Current limits
 
-- MCP is stdio-only and does not expose HTTP transport, sampling, or roots.
+- MCP supports stdio and Streamable HTTP, but not sampling, roots, or
+  server-initiated request handling.
 - Skills use the core flat frontmatter parser.
 - If no host SessionStore/Memory callbacks are registered, state remains
   in-memory for the lifetime of the agent handle.
