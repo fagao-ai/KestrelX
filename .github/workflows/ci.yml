@@ -28,4 +28,5 @@ jobs:
       - run: PYTHONPATH=bindings/python python3 bindings/python/example.py
       - run: PYTHONPATH=bindings/python python3 bindings/python/example_async.py
       - run: PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
+      - run: PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps

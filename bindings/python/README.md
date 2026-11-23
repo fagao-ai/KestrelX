@@ -7,6 +7,7 @@ cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
+PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
 ```
 
 Set `KESTREL_FFI_PATH` when the shared library is not under `target/debug` or
@@ -51,3 +52,14 @@ Objects follow the same protocols as the Rust traits:
 - memory: `recall(query) -> list[dict]`, `remember(entry)`
 
 See `example_persistence.py` for an in-memory database example.
+
+Custom Python models can stream tokens by accepting an `emit` function:
+
+```python
+def stream_model(request, emit):
+    emit({"type": "text", "text": "hello "})
+    emit({"type": "text", "text": "world"})
+    return {...}  # complete ModelResponse
+
+Agent(config, stream_model=stream_model)
+```

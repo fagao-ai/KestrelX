@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     callbacks::{
         CallbackTracker, EventCallback, EventCallbackFn, ModelCallback, ModelCallbackFn,
-        ToolCallback, ToolCallbackFn,
+        StreamingModelCallback, StreamingModelCallbackFn, ToolCallback, ToolCallbackFn,
     },
     config::Settings,
     event::{CallbackEventSink, EventSlot},
@@ -169,6 +169,46 @@ pub unsafe extern "C" fn kestrel_agent_new_with_model(
         let tracker = Arc::new(CallbackTracker::default());
         let model = settings.callback_model(
             ModelCallback {
+                function: callback,
+                user_data: user_data as usize,
+            },
+            tracker.clone(),
+        );
+        build_agent(settings, model, tracker, None, None)
+    });
+
+    match result {
+        Ok(agent) => Box::into_raw(agent),
+        Err(error_message) => {
+            // SAFETY: out_error follows the C contract.
+            unsafe { set_error(error, error_message) };
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Builds an agent with a token-streaming host-language model callback.
+///
+/// # Safety
+///
+/// Callback and pointers follow the C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kestrel_agent_new_with_streaming_model(
+    config_json: *const c_char,
+    callback: Option<StreamingModelCallbackFn>,
+    user_data: *mut c_void,
+    error: *mut *mut c_char,
+) -> *mut KestrelAgent {
+    // SAFETY: out_error follows the C contract.
+    unsafe { clear_error(error) };
+    let result = ffi_catch(|| {
+        // SAFETY: config_json is required by the C contract.
+        let config_json = unsafe { required_string(config_json, "config_json") }?;
+        let settings = Settings::parse(&config_json)?;
+        let callback = callback.ok_or_else(|| "model callback must not be NULL".to_owned())?;
+        let tracker = Arc::new(CallbackTracker::default());
+        let model = settings.streaming_callback_model(
+            StreamingModelCallback {
                 function: callback,
                 user_data: user_data as usize,
             },

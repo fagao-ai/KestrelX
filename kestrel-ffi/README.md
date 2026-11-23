@@ -28,6 +28,7 @@ Main functions:
 |---|---|
 | `kestrel_agent_new` | OpenAI-compatible agent from config JSON |
 | `kestrel_agent_new_with_model` | agent backed by a host model callback |
+| `kestrel_agent_new_with_streaming_model` | host model with token deltas |
 | `kestrel_agent_register_tool` | register a synchronous host tool |
 | `kestrel_agent_set_event_callback` | receive `AgentEvent` JSON |
 | `kestrel_agent_run` | bidirectional blocking run for text input |
@@ -171,9 +172,27 @@ char *model_callback(void *user_data, const char *request_json);
 `request_json` is a serialized `kestrel::ModelRequest`. Return a serialized
 `kestrel::ModelResponse`, allocated with `kestrel_string_new`.
 
-The custom callback path currently emits the final assistant text as one
-`model_delta` event. Native token-level streaming is implemented by the
-OpenAI-compatible provider.
+The legacy callback path emits the final assistant text as one `model_delta`.
+Use `KestrelStreamingModelCallback` for real-time deltas.
+
+### Streaming model callback
+
+The streaming callback receives a borrowed `emit` function and may send
+`ModelDelta` JSON while generating:
+
+```c
+char *stream_model(void *user_data, const char *request_json,
+                   KestrelDeltaEmitter emit, void *emit_ctx,
+                   char **error) {
+    emit(emit_ctx, "{\"type\":\"text\",\"text\":\"hello \"}");
+    emit(emit_ctx, "{\"type\":\"text\",\"text\":\"world\"}");
+    return kestrel_string_new(full_response_json);
+}
+```
+
+`emit` and `emit_ctx` are valid only during the callback. Invalid delta JSON is
+ignored. The returned `ModelResponse` remains the source of truth for tool calls
+and conversation history.
 
 ### Event callback
 
@@ -247,11 +266,13 @@ cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
+PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
 ```
 
 The ctypes wrapper supports OpenAI config, custom model callbacks, tools, events,
 session snapshots, todos, reset, cancellation, and `start_run` /
 `next_event_async` / `wait_async`, plus host-backed session and memory objects.
+Custom models can stream through `stream_model=callback(request, emit)`.
 
 ## Current limits
 
@@ -259,5 +280,6 @@ session snapshots, todos, reset, cancellation, and `start_run` /
 - Skills use the core flat frontmatter parser.
 - If no host SessionStore/Memory callbacks are registered, state remains
   in-memory for the lifetime of the agent handle.
-- Custom model callbacks are non-token-streaming.
+- Legacy `KestrelModelCallback` remains non-token-streaming; use
+  `KestrelStreamingModelCallback` for deltas.
 - Event delivery is synchronous callback delivery, not a bounded queue.

@@ -10,7 +10,7 @@ use kestrel::{
 use serde::Deserialize;
 
 use crate::{
-    callbacks::{CallbackTracker, ModelCallback},
+    callbacks::{CallbackTracker, ModelCallback, StreamingModelCallback},
     model::CallbackModel,
     runtime,
 };
@@ -113,17 +113,33 @@ impl Settings {
         callback: ModelCallback,
         tracker: Arc<CallbackTracker>,
     ) -> Arc<dyn Model> {
-        let name = if self.openai.model.trim().is_empty() {
-            "callback".to_owned()
-        } else {
-            self.openai.model.clone()
-        };
         Arc::new(CallbackModel::new(
-            name,
+            self.callback_model_name(),
             self.context_window.or(self.openai.context_window),
             callback,
             tracker,
         ))
+    }
+
+    pub(crate) fn streaming_callback_model(
+        &self,
+        callback: StreamingModelCallback,
+        tracker: Arc<CallbackTracker>,
+    ) -> Arc<dyn Model> {
+        Arc::new(CallbackModel::new_streaming(
+            self.callback_model_name(),
+            self.context_window.or(self.openai.context_window),
+            callback,
+            tracker,
+        ))
+    }
+
+    fn callback_model_name(&self) -> String {
+        if self.openai.model.trim().is_empty() {
+            "callback".to_owned()
+        } else {
+            self.openai.model.clone()
+        }
     }
 
     pub(crate) fn build(

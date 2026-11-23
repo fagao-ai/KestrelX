@@ -44,6 +44,26 @@ typedef char *(*KestrelModelCallback)(
     const char *request_json);
 
 /*
+ * delta_json deserializes into kestrel::ModelDelta. emit and emit_ctx are
+ * borrowed for the duration of the streaming model callback and must not be
+ * stored after it returns.
+ */
+typedef void (*KestrelDeltaEmitter)(
+    void *emit_ctx,
+    const char *delta_json);
+
+/*
+ * Emit zero or more ModelDelta JSON values during generation, then return a
+ * complete ModelResponse JSON allocated with kestrel_string_new.
+ */
+typedef char *(*KestrelStreamingModelCallback)(
+    void *user_data,
+    const char *request_json,
+    KestrelDeltaEmitter emit,
+    void *emit_ctx,
+    char **error);
+
+/*
  * Persistence callbacks receive error as a char** initialized to NULL.
  * On failure allocate an error with kestrel_string_new and store it in *error.
  * Returned load/recall strings are owned by Kestrel and must also be allocated
@@ -99,6 +119,12 @@ KestrelAgent *kestrel_agent_new_with_model(
     void *user_data,
     char **error);
 
+KestrelAgent *kestrel_agent_new_with_streaming_model(
+    const char *config_json,
+    KestrelStreamingModelCallback callback,
+    void *user_data,
+    char **error);
+
 /*
  * Flexible construction path. Register persistence callbacks before build.
  * The builder remains owned by the caller and can produce one agent.
@@ -110,6 +136,12 @@ KestrelAgentBuilder *kestrel_agent_builder_new(
 KestrelAgentBuilder *kestrel_agent_builder_new_with_model(
     const char *config_json,
     KestrelModelCallback callback,
+    void *user_data,
+    char **error);
+
+KestrelAgentBuilder *kestrel_agent_builder_new_with_streaming_model(
+    const char *config_json,
+    KestrelStreamingModelCallback callback,
     void *user_data,
     char **error);
 

@@ -313,7 +313,7 @@ let agent = builder.build()?;
 仓库现在包含独立的 `kestrel-ffi` crate：
 
 - 稳定 C ABI，头文件位于 `kestrel-ffi/include/kestrel.h`
-- OpenAI-compatible 或宿主语言自定义 model callback
+- OpenAI-compatible 或宿主语言自定义 model callback（支持 token delta）
 - 宿主语言 tool callback
 - 同步事件 callback（包含 `model_delta`）
 - 阻塞 run、非阻塞 `KestrelRun`、事件轮询、跨线程取消、Session/Todo JSON 快照
@@ -352,8 +352,9 @@ cargo build -p kestrel-ffi --release
 ```
 
 自定义模型通过 `kestrel_agent_new_with_model` 注册。callback 收到序列化的
-`ModelRequest`，返回序列化的 `ModelResponse`。自定义模型目前是单块 delta fallback；
-token 级 SSE 由内置 OpenAI provider 提供。
+`ModelRequest`，返回序列化的 `ModelResponse`。需要 token 级输出时使用
+`kestrel_agent_new_with_streaming_model` 或 Python `stream_model`，生成过程中调用
+传入的 `emit` 推送 `ModelDelta`。
 
 `skills` 会在构造时加载并注入 catalog/`read_skill`；`mcp_servers` 会连接 stdio MCP
 并在构造时发现远端工具。包含 MCP 的构造会阻塞，且不能从 Tokio runtime 线程调用。
@@ -365,6 +366,7 @@ cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
+PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
 ```
 
 其他语言只需要实现 `kestrel.h` 中的函数指针和 JSON 编解码。详细 ABI、内存所有权与
@@ -378,7 +380,7 @@ bindings/python     # ctypes 参考 SDK
 
 ## 当前边界
 
-- OpenAI provider 支持 token/tool-call SSE；自定义 FFI model callback 目前单块输出。
+- OpenAI provider 和自定义 streaming model callback 都支持 token/tool-call 增量。
 - 单一模型调用内不并发执行工具，保证结果顺序和错误语义简单可预测。
 - OpenAI provider 使用 Chat Completions 兼容协议，不覆盖 Responses API。
 - MCP 仅 stdio；Skills 使用简化 frontmatter 解析。
@@ -405,6 +407,7 @@ cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
+PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
 ```
 
 ## 目录
@@ -431,4 +434,5 @@ bindings/python/
   example.py    # 离线 callback model + tool 示例
   example_async.py # 非阻塞 run + 事件轮询示例
   example_persistence.py # 宿主 SessionStore + Memory 示例
+  example_stream_model.py # 自定义模型 token 流示例
 ```

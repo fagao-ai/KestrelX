@@ -10,14 +10,14 @@ use std::{
 
 use kestrel::{AgentOutput, FinishReason, Message, ModelResponse, ToolCall, Usage};
 use kestrel_ffi::{
-    KestrelAgent, kestrel_agent_builder_build, kestrel_agent_builder_free,
+    DeltaEmitterFn, KestrelAgent, kestrel_agent_builder_build, kestrel_agent_builder_free,
     kestrel_agent_builder_new_with_model, kestrel_agent_builder_set_memory,
     kestrel_agent_builder_set_session_store, kestrel_agent_cancel, kestrel_agent_free,
-    kestrel_agent_new, kestrel_agent_new_with_model, kestrel_agent_register_tool,
-    kestrel_agent_reset, kestrel_agent_run, kestrel_agent_session_json,
-    kestrel_agent_set_event_callback, kestrel_agent_start_run, kestrel_agent_todos_json,
-    kestrel_run_free, kestrel_run_is_done, kestrel_run_next_event, kestrel_run_wait,
-    kestrel_string_free, kestrel_string_new,
+    kestrel_agent_new, kestrel_agent_new_with_model, kestrel_agent_new_with_streaming_model,
+    kestrel_agent_register_tool, kestrel_agent_reset, kestrel_agent_run,
+    kestrel_agent_session_json, kestrel_agent_set_event_callback, kestrel_agent_start_run,
+    kestrel_agent_todos_json, kestrel_run_free, kestrel_run_is_done, kestrel_run_next_event,
+    kestrel_run_wait, kestrel_string_free, kestrel_string_new,
 };
 use serde_json::{Value, json};
 
@@ -89,6 +89,31 @@ unsafe extern "C" fn blocking_model_callback(
             finish_reason: FinishReason::Stop,
             usage: Usage::default(),
             model: Some("blocking".to_owned()),
+            raw: None,
+        })
+        .unwrap(),
+    )
+}
+
+unsafe extern "C" fn streaming_model_callback(
+    _user_data: *mut c_void,
+    _request_json: *const c_char,
+    emit: DeltaEmitterFn,
+    emit_ctx: *mut c_void,
+    error: *mut *mut c_char,
+) -> *mut c_char {
+    unsafe { *error = ptr::null_mut() };
+    for text in ["stream ", "works"] {
+        let delta = CString::new(json!({ "type": "text", "text": text }).to_string()).unwrap();
+        // SAFETY: emit and emit_ctx are valid for this callback.
+        unsafe { emit(emit_ctx, delta.as_ptr()) };
+    }
+    allocate(
+        &serde_json::to_string(&ModelResponse {
+            message: Message::assistant("stream works"),
+            finish_reason: FinishReason::Stop,
+            usage: Usage::default(),
+            model: Some("streaming-callback".to_owned()),
             raw: None,
         })
         .unwrap(),
@@ -512,6 +537,59 @@ fn async_run_polls_events_and_waits_for_output() {
     assert_eq!(unsafe { kestrel_run_is_done(run) }, 1);
     // SAFETY: run is complete.
     unsafe { kestrel_run_free(run) };
+    // SAFETY: no run is active.
+    unsafe { kestrel_agent_free(agent) };
+}
+
+#[test]
+fn streaming_model_callback_emits_token_deltas() {
+    let event_state = Box::new(EventState {
+        events: Mutex::new(Vec::new()),
+    });
+    let config = CString::new(
+        json!({
+            "streaming": true,
+            "openai": { "model": "streaming-callback" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut error = ptr::null_mut();
+    // SAFETY: event state outlives the agent.
+    let agent = unsafe {
+        kestrel_agent_new_with_streaming_model(
+            config.as_ptr(),
+            Some(streaming_model_callback),
+            ptr::null_mut(),
+            &mut error,
+        )
+    };
+    assert!(!agent.is_null(), "{}", error_message(error));
+    // SAFETY: event state outlives the agent.
+    assert_eq!(
+        unsafe {
+            kestrel_agent_set_event_callback(
+                agent,
+                Some(event_callback),
+                (&*event_state as *const EventState).cast_mut().cast(),
+            )
+        },
+        0
+    );
+    let prompt = CString::new("stream").unwrap();
+    // SAFETY: agent and prompt are valid.
+    let output = unsafe { kestrel_agent_run(agent, prompt.as_ptr(), &mut error) };
+    assert!(!output.is_null(), "{}", error_message(error));
+    // SAFETY: output is owned by this call.
+    unsafe { kestrel_string_free(output) };
+
+    let events = event_state.events.lock().unwrap();
+    let deltas = events
+        .iter()
+        .filter(|event| event["type"] == "model_delta")
+        .map(|event| event["delta"]["text"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(deltas, ["stream ", "works"]);
     // SAFETY: no run is active.
     unsafe { kestrel_agent_free(agent) };
 }

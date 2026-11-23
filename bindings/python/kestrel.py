@@ -29,6 +29,15 @@ ModelCallback = ctypes.CFUNCTYPE(
     ctypes.c_void_p,
     ctypes.c_char_p,
 )
+DeltaEmitter = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p)
+StreamingModelCallback = ctypes.CFUNCTYPE(
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_char_p,
+    DeltaEmitter,
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_void_p),
+)
 SessionLoadCallback = ctypes.CFUNCTYPE(
     ctypes.c_void_p,
     ctypes.c_void_p,
@@ -98,6 +107,13 @@ def load_library(path: Optional[str] = None) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_void_p),
     ]
     library.kestrel_agent_new_with_model.restype = ctypes.c_void_p
+    library.kestrel_agent_new_with_streaming_model.argtypes = [
+        ctypes.c_char_p,
+        StreamingModelCallback,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_new_with_streaming_model.restype = ctypes.c_void_p
     library.kestrel_agent_builder_new.argtypes = [
         ctypes.c_char_p,
         ctypes.POINTER(ctypes.c_void_p),
@@ -110,6 +126,13 @@ def load_library(path: Optional[str] = None) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_void_p),
     ]
     library.kestrel_agent_builder_new_with_model.restype = ctypes.c_void_p
+    library.kestrel_agent_builder_new_with_streaming_model.argtypes = [
+        ctypes.c_char_p,
+        StreamingModelCallback,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_builder_new_with_streaming_model.restype = ctypes.c_void_p
     library.kestrel_agent_builder_set_session_store.argtypes = [
         ctypes.c_void_p,
         SessionLoadCallback,
@@ -224,6 +247,9 @@ class Agent:
         config: Union[dict[str, Any], str],
         *,
         model: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None,
+        stream_model: Optional[
+            Callable[[dict[str, Any], Callable[[dict[str, Any]], None]], dict[str, Any]]
+        ] = None,
         session_store: Optional[Any] = None,
         memory: Optional[Any] = None,
         library: Optional[ctypes.CDLL] = None,
@@ -238,14 +264,27 @@ class Agent:
         self._event_handler: Optional[Callable[[dict[str, Any]], None]] = None
         config_json = config if isinstance(config, str) else json.dumps(config)
         error = ctypes.c_void_p()
+        if model is not None and stream_model is not None:
+            raise ValueError("model and stream_model are mutually exclusive")
 
         if session_store is not None or memory is not None:
             handle = self._build_with_services(
                 config_json,
                 model,
+                stream_model,
                 session_store,
                 memory,
                 error,
+            )
+        elif stream_model is not None:
+            self._model_callback = StreamingModelCallback(
+                self._streaming_model_proxy(stream_model)
+            )
+            handle = self._lib.kestrel_agent_new_with_streaming_model(
+                config_json.encode(),
+                self._model_callback,
+                None,
+                ctypes.byref(error),
             )
         elif model is None:
             self._model_callback = None
@@ -458,11 +497,24 @@ class Agent:
         self,
         config_json: str,
         model: Optional[Callable[[dict[str, Any]], dict[str, Any]]],
+        stream_model: Optional[
+            Callable[[dict[str, Any], Callable[[dict[str, Any]], None]], dict[str, Any]]
+        ],
         session_store: Optional[Any],
         memory: Optional[Any],
         error: ctypes.c_void_p,
     ) -> int:
-        if model is None:
+        if stream_model is not None:
+            self._model_callback = StreamingModelCallback(
+                self._streaming_model_proxy(stream_model)
+            )
+            builder = self._lib.kestrel_agent_builder_new_with_streaming_model(
+                config_json.encode(),
+                self._model_callback,
+                None,
+                ctypes.byref(error),
+            )
+        elif model is None:
             self._model_callback = None
             builder = self._lib.kestrel_agent_builder_new(
                 config_json.encode(),
@@ -494,6 +546,30 @@ class Agent:
         if not handle:
             raise KestrelError(self._take_error(error))
         return handle
+
+    def _streaming_model_proxy(
+        self,
+        model: Callable[[dict[str, Any], Callable[[dict[str, Any]], None]], dict[str, Any]],
+    ) -> Callable[[Any, bytes, Any, Any, Any], int]:
+        def model_proxy(
+            _user_data: Any,
+            request_ptr: bytes,
+            emit: Any,
+            emit_ctx: Any,
+            error_ptr: Any,
+        ) -> int:
+            try:
+                request = json.loads(request_ptr.decode())
+
+                def emit_delta(delta: dict[str, Any]) -> None:
+                    emit(emit_ctx, json.dumps(delta).encode())
+
+                return self._allocate_json(model(request, emit_delta))
+            except Exception as callback_error:
+                self._set_callback_error(error_ptr, callback_error)
+                return 0
+
+        return model_proxy
 
     def _install_session_store(
         self,

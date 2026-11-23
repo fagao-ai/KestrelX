@@ -12,7 +12,7 @@ use crate::{
         CallbackTracker, MemoryRecallCallback, MemoryRecallCallbackFn, MemoryRememberCallback,
         MemoryRememberCallbackFn, ModelCallback, ModelCallbackFn, SessionDeleteCallback,
         SessionDeleteCallbackFn, SessionLoadCallback, SessionLoadCallbackFn, SessionSaveCallback,
-        SessionSaveCallbackFn,
+        SessionSaveCallbackFn, StreamingModelCallback, StreamingModelCallbackFn,
     },
     config::Settings,
     ffi_catch,
@@ -32,6 +32,7 @@ pub struct KestrelAgentBuilder {
 enum ModelSource {
     OpenAi,
     Callback(ModelCallback),
+    StreamingCallback(StreamingModelCallback),
 }
 
 impl KestrelAgentBuilder {
@@ -101,6 +102,42 @@ pub unsafe extern "C" fn kestrel_agent_builder_new_with_model(
         Ok(KestrelAgentBuilder::new(
             settings,
             ModelSource::Callback(ModelCallback {
+                function: callback,
+                user_data: user_data as usize,
+            }),
+        ))
+    });
+    match result {
+        Ok(builder) => Box::into_raw(Box::new(builder)),
+        Err(error_message) => {
+            // SAFETY: out_error follows the C contract.
+            unsafe { set_error(error, error_message) };
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Creates a builder with a token-streaming host model callback.
+///
+/// # Safety
+///
+/// Callback and pointers follow the C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kestrel_agent_builder_new_with_streaming_model(
+    config_json: *const c_char,
+    callback: Option<StreamingModelCallbackFn>,
+    user_data: *mut c_void,
+    error: *mut *mut c_char,
+) -> *mut KestrelAgentBuilder {
+    // SAFETY: out_error follows the C contract.
+    unsafe { clear_error(error) };
+    let result = ffi_catch(|| {
+        let config_json = unsafe { required_string(config_json, "config_json") }?;
+        let settings = Settings::parse(&config_json)?;
+        let callback = callback.ok_or_else(|| "model callback must not be NULL".to_owned())?;
+        Ok(KestrelAgentBuilder::new(
+            settings,
+            ModelSource::StreamingCallback(StreamingModelCallback {
                 function: callback,
                 user_data: user_data as usize,
             }),
@@ -221,6 +258,9 @@ pub unsafe extern "C" fn kestrel_agent_builder_build(
         let model = match model_source {
             ModelSource::OpenAi => settings.openai_model()?,
             ModelSource::Callback(callback) => settings.callback_model(callback, tracker.clone()),
+            ModelSource::StreamingCallback(callback) => {
+                settings.streaming_callback_model(callback, tracker.clone())
+            }
         };
         let agent = build_agent(
             settings,

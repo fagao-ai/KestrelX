@@ -1,8 +1,10 @@
 use std::{
-    ffi::{CString, c_char, c_int, c_void},
+    ffi::{CStr, CString, c_char, c_int, c_void},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Condvar, Mutex},
 };
+
+use kestrel::ModelDelta;
 
 /// Tracks host callbacks that may still be running after a cancelled run.
 #[derive(Default)]
@@ -64,6 +66,14 @@ pub type ToolCallbackFn = unsafe extern "C" fn(
 ) -> *mut c_char;
 pub type ModelCallbackFn =
     unsafe extern "C" fn(user_data: *mut c_void, request_json: *const c_char) -> *mut c_char;
+pub type DeltaEmitterFn = unsafe extern "C" fn(emit_ctx: *mut c_void, delta_json: *const c_char);
+pub type StreamingModelCallbackFn = unsafe extern "C" fn(
+    user_data: *mut c_void,
+    request_json: *const c_char,
+    emit: DeltaEmitterFn,
+    emit_ctx: *mut c_void,
+    error: *mut *mut c_char,
+) -> *mut c_char;
 pub type SessionLoadCallbackFn = unsafe extern "C" fn(
     user_data: *mut c_void,
     session_id: *const c_char,
@@ -156,6 +166,64 @@ impl ModelCallback {
         }))
         .map_err(|_| "model callback panicked".to_owned())?;
         take_callback_string(pointer, "model")
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct StreamingModelCallback {
+    pub function: StreamingModelCallbackFn,
+    pub user_data: usize,
+}
+
+struct DeltaContext {
+    sender: tokio::sync::mpsc::UnboundedSender<ModelDelta>,
+}
+
+unsafe extern "C" fn emit_model_delta(emit_ctx: *mut c_void, delta_json: *const c_char) {
+    if emit_ctx.is_null() || delta_json.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: emit_ctx is a DeltaContext borrowed for this callback.
+        let context = unsafe { &*(emit_ctx as *const DeltaContext) };
+        // SAFETY: delta_json is a valid string for this callback.
+        let delta_json = unsafe { CStr::from_ptr(delta_json) };
+        if let Ok(text) = delta_json.to_str()
+            && let Ok(delta) = serde_json::from_str::<ModelDelta>(text)
+        {
+            let _ = context.sender.send(delta);
+        }
+    }));
+}
+
+impl StreamingModelCallback {
+    pub(crate) fn invoke(
+        self,
+        request_json: &str,
+        sender: tokio::sync::mpsc::UnboundedSender<ModelDelta>,
+    ) -> Result<String, String> {
+        let request = CString::new(request_json)
+            .map_err(|error| format!("model request contains NUL: {error}"))?;
+        let context = DeltaContext { sender };
+        let mut error = std::ptr::null_mut();
+        let pointer = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: callback and user_data are provided by the host. The
+            // emitter and context are borrowed only for this call.
+            unsafe {
+                (self.function)(
+                    self.user_data as *mut c_void,
+                    request.as_ptr(),
+                    emit_model_delta,
+                    (&context as *const DeltaContext).cast_mut().cast(),
+                    &mut error,
+                )
+            }
+        }))
+        .map_err(|_| "streaming model callback panicked".to_owned())?;
+        match callback_result(pointer, error, "streaming model")? {
+            Some(value) => Ok(value),
+            None => Err("streaming model callback returned NULL".to_owned()),
+        }
     }
 }
 
