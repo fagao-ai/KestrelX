@@ -8,6 +8,14 @@ extern "C" {
 #endif
 
 typedef struct KestrelAgent KestrelAgent;
+typedef struct KestrelRun KestrelRun;
+
+enum {
+    KESTREL_STATUS_ERROR = -1,
+    KESTREL_STATUS_TIMEOUT = 0,
+    KESTREL_STATUS_OK = 1,
+    KESTREL_STATUS_EVENT_END = 2
+};
 
 /*
  * Event JSON is borrowed for the duration of the callback. Copy it before
@@ -86,6 +94,43 @@ char *kestrel_agent_run_message(
     KestrelAgent *agent,
     const char *message_json,
     char **error);
+
+/* Starts a nonblocking run. Event callbacks still receive events. */
+KestrelRun *kestrel_agent_start_run(
+    KestrelAgent *agent,
+    const char *prompt,
+    char **error);
+
+KestrelRun *kestrel_agent_start_run_message(
+    KestrelAgent *agent,
+    const char *message_json,
+    char **error);
+
+/*
+ * Returns 1 with event_json, 0 on timeout, 2 when the run has ended, or -1 on
+ * error. timeout_ms < 0 waits indefinitely.
+ */
+int32_t kestrel_run_next_event(
+    KestrelRun *run,
+    int32_t timeout_ms,
+    char **event_json,
+    char **error);
+
+/*
+ * Returns 1 with output_json, 0 on timeout, or -1 on run/FFI error.
+ * timeout_ms < 0 waits indefinitely.
+ */
+int32_t kestrel_run_wait(
+    KestrelRun *run,
+    int32_t timeout_ms,
+    char **output_json,
+    char **error);
+
+int32_t kestrel_run_is_done(KestrelRun *run);
+int32_t kestrel_run_cancel(KestrelRun *run);
+
+/* Cancels and frees the run. May block until in-flight callbacks return. */
+void kestrel_run_free(KestrelRun *run);
 
 /* Cancels the active run, if any. Safe to call from another thread. */
 int32_t kestrel_agent_cancel(KestrelAgent *agent);

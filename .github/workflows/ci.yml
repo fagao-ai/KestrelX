@@ -26,4 +26,5 @@ jobs:
       - run: cc -fsyntax-only -x c -include kestrel-ffi/include/kestrel.h /dev/null
       - run: cargo build -p kestrel-ffi
       - run: PYTHONPATH=bindings/python python3 bindings/python/example.py
+      - run: PYTHONPATH=bindings/python python3 bindings/python/example_async.py
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps

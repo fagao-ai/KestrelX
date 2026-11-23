@@ -316,7 +316,7 @@ let agent = builder.build()?;
 - OpenAI-compatible 或宿主语言自定义 model callback
 - 宿主语言 tool callback
 - 同步事件 callback（包含 `model_delta`）
-- 阻塞 run、跨线程取消、Session/Todo JSON 快照
+- 阻塞 run、非阻塞 `KestrelRun`、事件轮询、跨线程取消、Session/Todo JSON 快照
 - 内置 Tokio runtime，不要求宿主语言理解 Rust async
 
 ```bash
@@ -351,6 +351,7 @@ token 级 SSE 由内置 OpenAI provider 提供。
 ```bash
 cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
+PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 ```
 
 其他语言只需要实现 `kestrel.h` 中的函数指针和 JSON 编解码。详细 ABI、内存所有权与
@@ -368,7 +369,8 @@ bindings/python     # ctypes 参考 SDK
 - 单一模型调用内不并发执行工具，保证结果顺序和错误语义简单可预测。
 - OpenAI provider 使用 Chat Completions 兼容协议，不覆盖 Responses API。
 - MCP 仅 stdio；Skills 使用简化 frontmatter 解析。
-- FFI 的 run 是阻塞调用；宿主 SDK 需要自行放到工作线程/async executor。
+- FFI 同时提供同步 `run` 和异步 `start_run`；异步 handle 的 `poll/wait` 本身是同步
+  C 调用，语言 SDK 应放到 worker 或 executor。
 - FFI 的 tool callback 是同步回调；取消无法中断已经进入宿主 callback 的调用，但 run 会等
   在途 callback 返回后才报告取消，确保 `user_data` 生命周期安全。
 - 会话压缩会更新持久化历史；如需保留完整审计日志，应在 SessionStore 外单独存 event/audit。
@@ -387,6 +389,7 @@ cargo check -p kestrel --no-default-features
 cc -fsyntax-only -x c -include kestrel-ffi/include/kestrel.h /dev/null
 cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
+PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 ```
 
 ## 目录
@@ -411,4 +414,5 @@ kestrel-ffi/
 bindings/python/
   kestrel.py    # ctypes SDK
   example.py    # 离线 callback model + tool 示例
+  example_async.py # 非阻塞 run + 事件轮询示例
 ```

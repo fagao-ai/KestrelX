@@ -11,7 +11,8 @@ use kestrel_ffi::{
     KestrelAgent, kestrel_agent_cancel, kestrel_agent_free, kestrel_agent_new,
     kestrel_agent_new_with_model, kestrel_agent_register_tool, kestrel_agent_reset,
     kestrel_agent_run, kestrel_agent_session_json, kestrel_agent_set_event_callback,
-    kestrel_agent_todos_json, kestrel_string_free, kestrel_string_new,
+    kestrel_agent_start_run, kestrel_agent_todos_json, kestrel_run_free, kestrel_run_is_done,
+    kestrel_run_next_event, kestrel_run_wait, kestrel_string_free, kestrel_string_new,
 };
 use serde_json::{Value, json};
 
@@ -336,6 +337,86 @@ fn cancellation_waits_for_in_flight_host_callbacks() {
     assert!(error.contains("cancelled"), "{error}");
     worker.join().unwrap();
     // SAFETY: ownership is transferred exactly once.
+    unsafe { kestrel_agent_free(agent) };
+}
+
+#[test]
+fn async_run_polls_events_and_waits_for_output() {
+    let model_state = Box::new(ModelState {
+        responses: Mutex::new(VecDeque::from([serde_json::to_string(&ModelResponse {
+            message: Message::assistant("async complete"),
+            finish_reason: FinishReason::Stop,
+            usage: Usage::default(),
+            model: Some("callback".to_owned()),
+            raw: None,
+        })
+        .unwrap()])),
+        requests: Mutex::new(Vec::new()),
+    });
+    let config = CString::new(
+        json!({
+            "streaming": true,
+            "openai": { "model": "callback" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut error = ptr::null_mut();
+    // SAFETY: state outlives the run and agent.
+    let agent = unsafe {
+        kestrel_agent_new_with_model(
+            config.as_ptr(),
+            Some(model_callback),
+            (&*model_state as *const ModelState).cast_mut().cast(),
+            &mut error,
+        )
+    };
+    assert!(!agent.is_null(), "{}", error_message(error));
+
+    let prompt = CString::new("run asynchronously").unwrap();
+    // SAFETY: agent and prompt are valid.
+    let run = unsafe { kestrel_agent_start_run(agent, prompt.as_ptr(), &mut error) };
+    assert!(!run.is_null(), "{}", error_message(error));
+
+    let mut events = Vec::new();
+    loop {
+        let mut event_ptr = ptr::null_mut();
+        // SAFETY: run is valid and event_ptr is writable.
+        let status = unsafe { kestrel_run_next_event(run, 5_000, &mut event_ptr, &mut error) };
+        match status {
+            1 => {
+                // SAFETY: event_ptr is allocated by Kestrel.
+                let event = unsafe { CStr::from_ptr(event_ptr) }
+                    .to_str()
+                    .unwrap()
+                    .to_owned();
+                // SAFETY: ownership is released once.
+                unsafe { kestrel_string_free(event_ptr) };
+                events.push(serde_json::from_str::<Value>(&event).unwrap());
+            }
+            0 => continue,
+            2 => break,
+            -1 => panic!("{}", error_message(error)),
+            other => panic!("unexpected event status {other}"),
+        }
+    }
+    assert!(events.iter().any(|event| event["type"] == "run_completed"));
+
+    // SAFETY: run is valid and the output pointer is writable.
+    let mut output_ptr = ptr::null_mut();
+    let status = unsafe { kestrel_run_wait(run, 5_000, &mut output_ptr, &mut error) };
+    assert_eq!(status, 1, "{}", error_message(error));
+    // SAFETY: output_ptr is allocated by Kestrel.
+    let output = unsafe { CStr::from_ptr(output_ptr) }.to_str().unwrap();
+    let output: AgentOutput = serde_json::from_str(output).unwrap();
+    assert_eq!(output.text, "async complete");
+    // SAFETY: ownership is released once.
+    unsafe { kestrel_string_free(output_ptr) };
+    // SAFETY: run is valid.
+    assert_eq!(unsafe { kestrel_run_is_done(run) }, 1);
+    // SAFETY: run is complete.
+    unsafe { kestrel_run_free(run) };
+    // SAFETY: no run is active.
     unsafe { kestrel_agent_free(agent) };
 }
 

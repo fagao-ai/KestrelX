@@ -27,15 +27,15 @@ use crate::{
 /// Opaque FFI agent handle.
 pub struct KestrelAgent {
     pub(crate) inner: Agent,
-    events: EventSlot,
+    pub(crate) events: EventSlot,
     pub(crate) todos: Option<TodoList>,
     tracker: Arc<CallbackTracker>,
-    running: AtomicBool,
-    cancellation: Mutex<Option<CancellationToken>>,
+    running: Arc<AtomicBool>,
+    cancellation: Arc<Mutex<Option<CancellationToken>>>,
 }
 
 impl KestrelAgent {
-    fn begin_run(&self, token: CancellationToken) -> Result<RunGuard<'_>, String> {
+    pub(crate) fn begin_run(&self, token: CancellationToken) -> Result<RunLease, String> {
         self.running
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| "agent already has an active run".to_owned())?;
@@ -43,7 +43,11 @@ impl KestrelAgent {
             .cancellation
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = Some(token);
-        Ok(RunGuard { agent: self })
+        Ok(RunLease {
+            running: self.running.clone(),
+            cancellation: self.cancellation.clone(),
+            tracker: self.tracker.clone(),
+        })
     }
 
     fn run_message(&self, message: Message) -> Result<AgentOutput, String> {
@@ -57,19 +61,20 @@ impl KestrelAgent {
     }
 }
 
-struct RunGuard<'a> {
-    agent: &'a KestrelAgent,
+pub(crate) struct RunLease {
+    running: Arc<AtomicBool>,
+    cancellation: Arc<Mutex<Option<CancellationToken>>>,
+    tracker: Arc<CallbackTracker>,
 }
 
-impl Drop for RunGuard<'_> {
+impl Drop for RunLease {
     fn drop(&mut self) {
         *self
-            .agent
             .cancellation
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = None;
-        self.agent.tracker.wait_idle();
-        self.agent.running.store(false, Ordering::Release);
+        self.tracker.wait_idle();
+        self.running.store(false, Ordering::Release);
     }
 }
 
@@ -86,12 +91,12 @@ fn build_agent(
         events,
         todos: built.todos,
         tracker,
-        running: AtomicBool::new(false),
-        cancellation: Mutex::new(None),
+        running: Arc::new(AtomicBool::new(false)),
+        cancellation: Arc::new(Mutex::new(None)),
     }))
 }
 
-unsafe fn agent_ref<'a>(agent: *mut KestrelAgent) -> Result<&'a KestrelAgent, String> {
+pub(crate) unsafe fn agent_ref<'a>(agent: *mut KestrelAgent) -> Result<&'a KestrelAgent, String> {
     // SAFETY: the caller promises a live handle for this call.
     unsafe { agent.as_ref() }.ok_or_else(|| "agent must not be NULL".to_owned())
 }

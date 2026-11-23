@@ -32,6 +32,10 @@ Main functions:
 | `kestrel_agent_set_event_callback` | receive `AgentEvent` JSON |
 | `kestrel_agent_run` | bidirectional blocking run for text input |
 | `kestrel_agent_run_message` | same, with a full `Message` JSON input |
+| `kestrel_agent_start_run` | nonblocking run handle |
+| `kestrel_run_next_event` | poll the per-run event queue |
+| `kestrel_run_wait` | wait for final output without blocking the start |
+| `kestrel_run_is_done` / `kestrel_run_cancel` / `kestrel_run_free` | run lifecycle |
 | `kestrel_agent_cancel` | cancel the active run from any thread |
 | `kestrel_agent_session_json` | conversation snapshot |
 | `kestrel_agent_todos_json` | todo snapshot when enabled |
@@ -139,10 +143,39 @@ Events include:
 - `memory_recalled`, `context_compressed`
 - `run_completed`, `run_failed`
 
+## Async run handles
+
+`kestrel_agent_start_run*` returns immediately with a `KestrelRun`. The agent
+accepts only one active run at a time, but the host can keep processing its own
+event loop while the Rust runtime executes.
+
+`kestrel_run_next_event` returns:
+
+- `1`: an event JSON string was written
+- `0`: timeout
+- `2`: the queue has ended
+- `-1`: FFI error
+
+`kestrel_run_wait` returns:
+
+- `1`: final `AgentOutput` JSON was written
+- `0`: timeout
+- `-1`: run or FFI error
+
+`timeout_ms < 0` waits indefinitely. The event queue is unbounded; SDKs should
+continuously drain it or rely on the global event callback instead.
+
+Run-level event delivery still forwards to the agent event callback, while also
+populating the per-run poll queue. `kestrel_run_free` cancels and waits for the
+run and any in-flight host callbacks before returning.
+
 ## Threading and lifetime rules
 
 - `kestrel_agent_run*` is synchronous and internally calls a blocking Tokio
   runtime. Do not call it from a Tokio runtime thread.
+- `kestrel_agent_start_run*` is nonblocking, but `kestrel_run_next_event` and
+  `kestrel_run_wait` are blocking C calls.
+- An agent should outlive all of its async run handles.
 - Native SDKs should execute the blocking call on a worker thread.
 - `kestrel_agent_cancel` is thread-safe.
 - One agent accepts one active run at a time.
@@ -161,10 +194,12 @@ Events include:
 ```bash
 cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
+PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 ```
 
 The ctypes wrapper supports OpenAI config, custom model callbacks, tools, events,
-session snapshots, todos, reset, and cancellation.
+session snapshots, todos, reset, cancellation, and `start_run` /
+`next_event_async` / `wait_async`.
 
 ## Current limits
 

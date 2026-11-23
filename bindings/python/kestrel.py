@@ -10,6 +10,7 @@ Then set KESTREL_FFI_PATH if auto-discovery cannot find the library.
 from __future__ import annotations
 
 import ctypes
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -112,6 +113,38 @@ def load_library(path: Optional[str] = None) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_void_p),
     ]
     library.kestrel_agent_run_message.restype = ctypes.c_void_p
+    library.kestrel_agent_start_run.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_start_run.restype = ctypes.c_void_p
+    library.kestrel_agent_start_run_message.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_start_run_message.restype = ctypes.c_void_p
+    library.kestrel_run_next_event.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_run_next_event.restype = ctypes.c_int32
+    library.kestrel_run_wait.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_run_wait.restype = ctypes.c_int32
+    library.kestrel_run_is_done.argtypes = [ctypes.c_void_p]
+    library.kestrel_run_is_done.restype = ctypes.c_int32
+    library.kestrel_run_cancel.argtypes = [ctypes.c_void_p]
+    library.kestrel_run_cancel.restype = ctypes.c_int32
+    library.kestrel_run_free.argtypes = [ctypes.c_void_p]
+    library.kestrel_run_free.restype = None
     library.kestrel_agent_cancel.argtypes = [ctypes.c_void_p]
     library.kestrel_agent_cancel.restype = ctypes.c_int32
     library.kestrel_agent_session_json.argtypes = [
@@ -145,6 +178,7 @@ class Agent:
         self._lib = library or load_library()
         self._handle = ctypes.c_void_p()
         self._tool_callbacks: list[Any] = []
+        self._runs: list[Any] = []
         self._event_callback: Optional[Any] = None
         self.events: list[dict[str, Any]] = []
         self._event_handler: Optional[Callable[[dict[str, Any]], None]] = None
@@ -265,6 +299,20 @@ class Agent:
             json.dumps(message).encode(),
         )
 
+    def start_run(self, prompt: str) -> "Run":
+        """Starts a nonblocking run and returns a pollable Run handle."""
+        return self._start_run_call(
+            self._lib.kestrel_agent_start_run,
+            prompt.encode(),
+        )
+
+    def start_run_message(self, message: dict[str, Any]) -> "Run":
+        """Starts a nonblocking run from a Message JSON object."""
+        return self._start_run_call(
+            self._lib.kestrel_agent_start_run_message,
+            json.dumps(message).encode(),
+        )
+
     def cancel(self) -> None:
         """Requests cancellation of the active run."""
         if self._handle:
@@ -306,6 +354,12 @@ class Agent:
 
     def close(self) -> None:
         """Frees the native agent. Do not call while a run is active."""
+        for run in list(self._runs):
+            try:
+                run.close()
+            except Exception:
+                pass
+        self._runs.clear()
         if self._handle:
             self._lib.kestrel_agent_free(self._handle)
             self._handle = ctypes.c_void_p()
@@ -326,6 +380,15 @@ class Agent:
             raise KestrelError(self._take_error(error))
         return json.loads(self._take_string(pointer))
 
+    def _start_run_call(self, function: Any, payload: bytes) -> "Run":
+        error = ctypes.c_void_p()
+        pointer = function(self._handle, payload, ctypes.byref(error))
+        if not pointer:
+            raise KestrelError(self._take_error(error))
+        run = Run(self, pointer)
+        self._runs.append(run)
+        return run
+
     def _take_string(self, pointer: int) -> str:
         value = ctypes.string_at(pointer).decode()
         self._lib.kestrel_string_free(pointer)
@@ -337,3 +400,91 @@ class Agent:
         value = ctypes.string_at(error).decode()
         self._lib.kestrel_string_free(error)
         return value
+
+
+class Run:
+    """Pollable handle for one asynchronous native run."""
+
+    def __init__(self, owner: Agent, handle: int) -> None:
+        self._owner: Optional[Agent] = owner
+        self._lib = owner._lib
+        self._handle = ctypes.c_void_p(handle)
+        self.ended = False
+
+    @property
+    def is_done(self) -> bool:
+        """Returns whether the native run has produced its final outcome."""
+        if not self._handle:
+            return True
+        return self._lib.kestrel_run_is_done(self._handle) == 1
+
+    def next_event(self, timeout_ms: int = -1) -> Optional[dict[str, Any]]:
+        """Returns the next event, None on timeout/end."""
+        self._require_handle()
+        event = ctypes.c_void_p()
+        error = ctypes.c_void_p()
+        status = self._lib.kestrel_run_next_event(
+            self._handle,
+            timeout_ms,
+            ctypes.byref(event),
+            ctypes.byref(error),
+        )
+        if status == 1:
+            return json.loads(self._owner._take_string(event))
+        if status == 0:
+            return None
+        if status == 2:
+            self.ended = True
+            return None
+        raise KestrelError(self._owner._take_error(error))
+
+    async def next_event_async(
+        self,
+        timeout_ms: int = -1,
+    ) -> Optional[dict[str, Any]]:
+        """Async wrapper around next_event."""
+        return await asyncio.to_thread(self.next_event, timeout_ms)
+
+    def wait(self, timeout_ms: int = -1) -> dict[str, Any]:
+        """Waits for the final AgentOutput JSON."""
+        self._require_handle()
+        output = ctypes.c_void_p()
+        error = ctypes.c_void_p()
+        status = self._lib.kestrel_run_wait(
+            self._handle,
+            timeout_ms,
+            ctypes.byref(output),
+            ctypes.byref(error),
+        )
+        if status == 1:
+            return json.loads(self._owner._take_string(output))
+        if status == 0:
+            raise TimeoutError("Kestrel run did not finish before timeout")
+        raise KestrelError(self._owner._take_error(error))
+
+    async def wait_async(self, timeout_ms: int = -1) -> dict[str, Any]:
+        """Async wrapper around wait."""
+        return await asyncio.to_thread(self.wait, timeout_ms)
+
+    def cancel(self) -> None:
+        """Requests cancellation without freeing the run handle."""
+        if self._handle:
+            self._lib.kestrel_run_cancel(self._handle)
+
+    def close(self) -> None:
+        """Cancels and frees the run, waiting for in-flight callbacks."""
+        if self._handle:
+            self._lib.kestrel_run_free(self._handle)
+            self._handle = ctypes.c_void_p()
+            self.ended = True
+            self._owner = None
+
+    def __enter__(self) -> "Run":
+        return self
+
+    def __exit__(self, *_exc_info: Any) -> None:
+        self.close()
+
+    def _require_handle(self) -> None:
+        if not self._handle or self._owner is None:
+            raise KestrelError("Kestrel run is closed")

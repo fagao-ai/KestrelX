@@ -1,6 +1,9 @@
 use std::{future::Future, sync::OnceLock};
 
-use tokio::runtime::{Builder, Runtime};
+use tokio::{
+    runtime::{Builder, Runtime},
+    task::JoinHandle,
+};
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
@@ -11,9 +14,22 @@ where
     if tokio::runtime::Handle::try_current().is_ok() {
         return Err("blocking Kestrel FFI calls cannot run on a Tokio runtime thread".to_owned());
     }
-    let runtime = if let Some(runtime) = RUNTIME.get() {
-        runtime
-    } else {
+    Ok(runtime()?.block_on(future))
+}
+
+pub(crate) fn spawn<F>(future: F) -> Result<JoinHandle<F::Output>, String>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    Ok(runtime()?.handle().spawn(future))
+}
+
+fn runtime() -> Result<&'static Runtime, String> {
+    if let Some(runtime) = RUNTIME.get() {
+        return Ok(runtime);
+    }
+    {
         let workers = std::thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(2)
@@ -27,8 +43,6 @@ where
         let _ = RUNTIME.set(created);
         RUNTIME
             .get()
-            .ok_or_else(|| "failed to initialize Kestrel runtime".to_owned())?
-    };
-
-    Ok(runtime.block_on(future))
+            .ok_or_else(|| "failed to initialize Kestrel runtime".to_owned())
+    }
 }

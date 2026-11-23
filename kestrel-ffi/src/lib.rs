@@ -11,6 +11,7 @@ mod callbacks;
 mod config;
 mod event;
 mod model;
+mod run;
 mod runtime;
 mod strings;
 mod tools;
@@ -22,6 +23,10 @@ pub use agent::{
     kestrel_agent_set_event_callback, kestrel_agent_todos_json,
 };
 pub use callbacks::{EventCallbackFn, ModelCallbackFn, ToolCallbackFn};
+pub use run::{
+    KestrelRun, kestrel_agent_start_run, kestrel_agent_start_run_message, kestrel_run_cancel,
+    kestrel_run_free, kestrel_run_is_done, kestrel_run_next_event, kestrel_run_wait,
+};
 pub use strings::{kestrel_string_free, kestrel_string_new};
 
 use std::any::Any;
