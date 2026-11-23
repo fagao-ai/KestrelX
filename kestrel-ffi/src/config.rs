@@ -3,8 +3,9 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use kestrel::mcp::{McpClient, McpServerConfig};
 use kestrel::skills::SkillRegistry;
 use kestrel::{
-    Agent, AgentConfig, EventSink, InMemoryMemory, MemoryOptions, Model, OpenAiCompatible,
-    SlidingWindowCompressor, SubAgentTool, SummarizingCompressor, TodoList, ToolChoice,
+    Agent, AgentConfig, EventSink, InMemoryMemory, Memory, MemoryOptions, Model, OpenAiCompatible,
+    SessionStore, SlidingWindowCompressor, SubAgentTool, SummarizingCompressor, TodoList,
+    ToolChoice,
 };
 use serde::Deserialize;
 
@@ -129,6 +130,8 @@ impl Settings {
         self,
         model: Arc<dyn Model>,
         event_sink: Arc<dyn EventSink>,
+        session_store: Option<Arc<dyn SessionStore>>,
+        memory_override: Option<Arc<dyn Memory>>,
     ) -> Result<BuiltAgent, String> {
         let mut config = AgentConfig {
             max_turns: self.max_turns,
@@ -147,6 +150,9 @@ impl Settings {
         let mut builder = Agent::builder(model.clone())
             .config(config)
             .event_sink(event_sink);
+        if let Some(session_store) = session_store {
+            builder = builder.session_store(session_store);
+        }
         if let Some(system_prompt) = self.system_prompt {
             builder = builder.system_prompt(system_prompt);
         }
@@ -168,7 +174,16 @@ impl Settings {
             todos = Some(list);
         }
 
-        if self.memory.enabled {
+        if let Some(memory) = memory_override {
+            builder = builder.memory(memory).memory_options(MemoryOptions {
+                auto_recall: self.memory.auto_recall,
+                recall_limit: self.memory.recall_limit,
+                max_context_tokens: self.memory.max_context_tokens,
+            });
+            if self.memory.tools {
+                builder = builder.with_memory_tools();
+            }
+        } else if self.memory.enabled {
             let memory = Arc::new(InMemoryMemory::new());
             builder = builder.memory(memory).memory_options(MemoryOptions {
                 auto_recall: self.memory.auto_recall,

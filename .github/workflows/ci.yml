@@ -27,4 +27,5 @@ jobs:
       - run: cargo build -p kestrel-ffi
       - run: PYTHONPATH=bindings/python python3 bindings/python/example.py
       - run: PYTHONPATH=bindings/python python3 bindings/python/example_async.py
+      - run: PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps

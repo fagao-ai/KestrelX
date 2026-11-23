@@ -29,6 +29,21 @@ ModelCallback = ctypes.CFUNCTYPE(
     ctypes.c_void_p,
     ctypes.c_char_p,
 )
+SessionLoadCallback = ctypes.CFUNCTYPE(
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_void_p),
+)
+SessionSaveCallback = ctypes.CFUNCTYPE(
+    ctypes.c_int32,
+    ctypes.c_void_p,
+    ctypes.c_char_p,
+    ctypes.POINTER(ctypes.c_void_p),
+)
+SessionDeleteCallback = SessionSaveCallback
+MemoryRecallCallback = SessionLoadCallback
+MemoryRememberCallback = SessionSaveCallback
 
 
 class KestrelError(RuntimeError):
@@ -83,6 +98,42 @@ def load_library(path: Optional[str] = None) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_void_p),
     ]
     library.kestrel_agent_new_with_model.restype = ctypes.c_void_p
+    library.kestrel_agent_builder_new.argtypes = [
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_builder_new.restype = ctypes.c_void_p
+    library.kestrel_agent_builder_new_with_model.argtypes = [
+        ctypes.c_char_p,
+        ModelCallback,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_builder_new_with_model.restype = ctypes.c_void_p
+    library.kestrel_agent_builder_set_session_store.argtypes = [
+        ctypes.c_void_p,
+        SessionLoadCallback,
+        SessionSaveCallback,
+        SessionDeleteCallback,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_builder_set_session_store.restype = ctypes.c_int32
+    library.kestrel_agent_builder_set_memory.argtypes = [
+        ctypes.c_void_p,
+        MemoryRecallCallback,
+        MemoryRememberCallback,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_builder_set_memory.restype = ctypes.c_int32
+    library.kestrel_agent_builder_build.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_builder_build.restype = ctypes.c_void_p
+    library.kestrel_agent_builder_free.argtypes = [ctypes.c_void_p]
+    library.kestrel_agent_builder_free.restype = None
     library.kestrel_agent_free.argtypes = [ctypes.c_void_p]
     library.kestrel_agent_free.restype = None
     library.kestrel_agent_set_event_callback.argtypes = [
@@ -173,11 +224,14 @@ class Agent:
         config: Union[dict[str, Any], str],
         *,
         model: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None,
+        session_store: Optional[Any] = None,
+        memory: Optional[Any] = None,
         library: Optional[ctypes.CDLL] = None,
     ) -> None:
         self._lib = library or load_library()
         self._handle = ctypes.c_void_p()
         self._tool_callbacks: list[Any] = []
+        self._service_callbacks: list[Any] = []
         self._runs: list[Any] = []
         self._event_callback: Optional[Any] = None
         self.events: list[dict[str, Any]] = []
@@ -185,20 +239,19 @@ class Agent:
         config_json = config if isinstance(config, str) else json.dumps(config)
         error = ctypes.c_void_p()
 
-        if model is None:
-            self._model_callback = None
-            handle = self._lib.kestrel_agent_new(
-                config_json.encode(),
-                ctypes.byref(error),
+        if session_store is not None or memory is not None:
+            handle = self._build_with_services(
+                config_json,
+                model,
+                session_store,
+                memory,
+                error,
             )
+        elif model is None:
+            self._model_callback = None
+            handle = self._lib.kestrel_agent_new(config_json.encode(), ctypes.byref(error))
         else:
-            def model_proxy(_user_data: Any, request_ptr: bytes) -> int:
-                request = json.loads(request_ptr.decode())
-                response = model(request)
-                encoded = json.dumps(response).encode()
-                return int(self._lib.kestrel_string_new(encoded) or 0)
-
-            self._model_callback = ModelCallback(model_proxy)
+            self._model_callback = ModelCallback(self._model_proxy(model))
             handle = self._lib.kestrel_agent_new_with_model(
                 config_json.encode(),
                 self._model_callback,
@@ -364,6 +417,7 @@ class Agent:
             self._lib.kestrel_agent_free(self._handle)
             self._handle = ctypes.c_void_p()
             self._tool_callbacks.clear()
+            self._service_callbacks.clear()
             self._event_callback = None
             self._model_callback = None
 
@@ -388,6 +442,162 @@ class Agent:
         run = Run(self, pointer)
         self._runs.append(run)
         return run
+
+    def _model_proxy(
+        self,
+        model: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> Callable[[Any, bytes], int]:
+        def model_proxy(_user_data: Any, request_ptr: bytes) -> int:
+            request = json.loads(request_ptr.decode())
+            response = model(request)
+            return self._allocate_json(response)
+
+        return model_proxy
+
+    def _build_with_services(
+        self,
+        config_json: str,
+        model: Optional[Callable[[dict[str, Any]], dict[str, Any]]],
+        session_store: Optional[Any],
+        memory: Optional[Any],
+        error: ctypes.c_void_p,
+    ) -> int:
+        if model is None:
+            self._model_callback = None
+            builder = self._lib.kestrel_agent_builder_new(
+                config_json.encode(),
+                ctypes.byref(error),
+            )
+        else:
+            self._model_callback = ModelCallback(self._model_proxy(model))
+            builder = self._lib.kestrel_agent_builder_new_with_model(
+                config_json.encode(),
+                self._model_callback,
+                None,
+                ctypes.byref(error),
+            )
+        if not builder:
+            raise KestrelError(self._take_error(error))
+
+        try:
+            if session_store is not None:
+                self._install_session_store(builder, session_store, error)
+            if memory is not None:
+                self._install_memory(builder, memory, error)
+            handle = self._lib.kestrel_agent_builder_build(
+                builder,
+                ctypes.byref(error),
+            )
+        finally:
+            self._lib.kestrel_agent_builder_free(builder)
+
+        if not handle:
+            raise KestrelError(self._take_error(error))
+        return handle
+
+    def _install_session_store(
+        self,
+        builder: int,
+        store: Any,
+        error: ctypes.c_void_p,
+    ) -> None:
+        load_method = getattr(store, "load")
+        save_method = getattr(store, "save")
+        delete_method = getattr(store, "delete", None)
+
+        def load_proxy(_user_data: Any, session_id: bytes, error_ptr: Any) -> int:
+            try:
+                session = load_method(session_id.decode())
+                return 0 if session is None else self._allocate_json(session)
+            except Exception as callback_error:
+                self._set_callback_error(error_ptr, callback_error)
+                return 0
+
+        def save_proxy(_user_data: Any, session_json: bytes, error_ptr: Any) -> int:
+            try:
+                save_method(json.loads(session_json.decode()))
+                return 0
+            except Exception as callback_error:
+                self._set_callback_error(error_ptr, callback_error)
+                return -1
+
+        load_callback = SessionLoadCallback(load_proxy)
+        save_callback = SessionSaveCallback(save_proxy)
+        callbacks: list[Any] = [load_callback, save_callback]
+        delete_callback = None
+        if delete_method is not None:
+            def delete_proxy(
+                _user_data: Any,
+                session_id: bytes,
+                error_ptr: Any,
+            ) -> int:
+                try:
+                    delete_method(session_id.decode())
+                    return 0
+                except Exception as callback_error:
+                    self._set_callback_error(error_ptr, callback_error)
+                    return -1
+
+            delete_callback = SessionDeleteCallback(delete_proxy)
+            callbacks.append(delete_callback)
+
+        status = self._lib.kestrel_agent_builder_set_session_store(
+            builder,
+            load_callback,
+            save_callback,
+            delete_callback,
+            None,
+            ctypes.byref(error),
+        )
+        if status != 0:
+            raise KestrelError(self._take_error(error))
+        self._service_callbacks.extend(callbacks)
+
+    def _install_memory(
+        self,
+        builder: int,
+        memory: Any,
+        error: ctypes.c_void_p,
+    ) -> None:
+        recall_method = getattr(memory, "recall")
+        remember_method = getattr(memory, "remember")
+
+        def recall_proxy(_user_data: Any, query_json: bytes, error_ptr: Any) -> int:
+            try:
+                entries = recall_method(json.loads(query_json.decode()))
+                return self._allocate_json(entries or [])
+            except Exception as callback_error:
+                self._set_callback_error(error_ptr, callback_error)
+                return 0
+
+        def remember_proxy(_user_data: Any, entry_json: bytes, error_ptr: Any) -> int:
+            try:
+                remember_method(json.loads(entry_json.decode()))
+                return 0
+            except Exception as callback_error:
+                self._set_callback_error(error_ptr, callback_error)
+                return -1
+
+        recall_callback = MemoryRecallCallback(recall_proxy)
+        remember_callback = MemoryRememberCallback(remember_proxy)
+        status = self._lib.kestrel_agent_builder_set_memory(
+            builder,
+            recall_callback,
+            remember_callback,
+            None,
+            ctypes.byref(error),
+        )
+        if status != 0:
+            raise KestrelError(self._take_error(error))
+        self._service_callbacks.extend([recall_callback, remember_callback])
+
+    def _allocate_json(self, value: Any) -> int:
+        encoded = json.dumps(value).encode()
+        return int(self._lib.kestrel_string_new(encoded) or 0)
+
+    def _set_callback_error(self, error_ptr: Any, error: Exception) -> None:
+        if error_ptr:
+            error_ptr[0] = self._lib.kestrel_string_new(str(error).encode())
 
     def _take_string(self, pointer: int) -> str:
         value = ctypes.string_at(pointer).decode()

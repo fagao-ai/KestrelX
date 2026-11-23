@@ -317,6 +317,7 @@ let agent = builder.build()?;
 - 宿主语言 tool callback
 - 同步事件 callback（包含 `model_delta`）
 - 阻塞 run、非阻塞 `KestrelRun`、事件轮询、跨线程取消、Session/Todo JSON 快照
+- 通过 builder callback 接入宿主数据库的 SessionStore 与长期 Memory
 - 内置 Tokio runtime，不要求宿主语言理解 Rust async
 
 ```bash
@@ -363,6 +364,7 @@ token 级 SSE 由内置 OpenAI provider 提供。
 cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
+PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 ```
 
 其他语言只需要实现 `kestrel.h` 中的函数指针和 JSON 编解码。详细 ABI、内存所有权与
@@ -402,6 +404,7 @@ cc -fsyntax-only -x c -include kestrel-ffi/include/kestrel.h /dev/null
 cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
+PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 ```
 
 ## 目录
@@ -427,4 +430,5 @@ bindings/python/
   kestrel.py    # ctypes SDK
   example.py    # 离线 callback model + tool 示例
   example_async.py # 非阻塞 run + 事件轮询示例
+  example_persistence.py # 宿主 SessionStore + Memory 示例
 ```

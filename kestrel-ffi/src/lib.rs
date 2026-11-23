@@ -7,10 +7,12 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod agent;
+mod builder;
 mod callbacks;
 mod config;
 mod event;
 mod model;
+mod persistence;
 mod run;
 mod runtime;
 mod strings;
@@ -22,7 +24,15 @@ pub use agent::{
     kestrel_agent_run, kestrel_agent_run_message, kestrel_agent_session_json,
     kestrel_agent_set_event_callback, kestrel_agent_todos_json,
 };
-pub use callbacks::{EventCallbackFn, ModelCallbackFn, ToolCallbackFn};
+pub use builder::{
+    KestrelAgentBuilder, kestrel_agent_builder_build, kestrel_agent_builder_free,
+    kestrel_agent_builder_new, kestrel_agent_builder_new_with_model,
+    kestrel_agent_builder_set_memory, kestrel_agent_builder_set_session_store,
+};
+pub use callbacks::{
+    EventCallbackFn, MemoryRecallCallbackFn, MemoryRememberCallbackFn, ModelCallbackFn,
+    SessionDeleteCallbackFn, SessionLoadCallbackFn, SessionSaveCallbackFn, ToolCallbackFn,
+};
 pub use run::{
     KestrelRun, kestrel_agent_start_run, kestrel_agent_start_run_message, kestrel_run_cancel,
     kestrel_run_free, kestrel_run_is_done, kestrel_run_next_event, kestrel_run_wait,

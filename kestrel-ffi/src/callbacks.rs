@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CString, c_char, c_void},
+    ffi::{CString, c_char, c_int, c_void},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Condvar, Mutex},
 };
@@ -64,6 +64,31 @@ pub type ToolCallbackFn = unsafe extern "C" fn(
 ) -> *mut c_char;
 pub type ModelCallbackFn =
     unsafe extern "C" fn(user_data: *mut c_void, request_json: *const c_char) -> *mut c_char;
+pub type SessionLoadCallbackFn = unsafe extern "C" fn(
+    user_data: *mut c_void,
+    session_id: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut c_char;
+pub type SessionSaveCallbackFn = unsafe extern "C" fn(
+    user_data: *mut c_void,
+    session_json: *const c_char,
+    error: *mut *mut c_char,
+) -> c_int;
+pub type SessionDeleteCallbackFn = unsafe extern "C" fn(
+    user_data: *mut c_void,
+    session_id: *const c_char,
+    error: *mut *mut c_char,
+) -> c_int;
+pub type MemoryRecallCallbackFn = unsafe extern "C" fn(
+    user_data: *mut c_void,
+    query_json: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut c_char;
+pub type MemoryRememberCallbackFn = unsafe extern "C" fn(
+    user_data: *mut c_void,
+    entry_json: *const c_char,
+    error: *mut *mut c_char,
+) -> c_int;
 
 #[derive(Clone, Copy)]
 pub(crate) struct EventCallback {
@@ -134,6 +159,139 @@ impl ModelCallback {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SessionLoadCallback {
+    pub function: SessionLoadCallbackFn,
+    pub user_data: usize,
+}
+
+impl SessionLoadCallback {
+    pub(crate) fn invoke(self, session_id: &str) -> Result<Option<String>, String> {
+        let session_id = CString::new(session_id)
+            .map_err(|error| format!("session id contains NUL: {error}"))?;
+        let mut error = std::ptr::null_mut();
+        let pointer = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: callback and user_data are provided by the host.
+            unsafe {
+                (self.function)(
+                    self.user_data as *mut c_void,
+                    session_id.as_ptr(),
+                    &mut error,
+                )
+            }
+        }))
+        .map_err(|_| "session load callback panicked".to_owned())?;
+        callback_result(pointer, error, "session load")
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SessionSaveCallback {
+    pub function: SessionSaveCallbackFn,
+    pub user_data: usize,
+}
+
+impl SessionSaveCallback {
+    pub(crate) fn invoke(self, session_json: &str) -> Result<(), String> {
+        let session_json = CString::new(session_json)
+            .map_err(|error| format!("session JSON contains NUL: {error}"))?;
+        let mut error = std::ptr::null_mut();
+        let status = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: callback and user_data are provided by the host.
+            unsafe {
+                (self.function)(
+                    self.user_data as *mut c_void,
+                    session_json.as_ptr(),
+                    &mut error,
+                )
+            }
+        }))
+        .map_err(|_| "session save callback panicked".to_owned())?;
+        callback_status(status, error, "session save")
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SessionDeleteCallback {
+    pub function: SessionDeleteCallbackFn,
+    pub user_data: usize,
+}
+
+impl SessionDeleteCallback {
+    pub(crate) fn invoke(self, session_id: &str) -> Result<(), String> {
+        let session_id = CString::new(session_id)
+            .map_err(|error| format!("session id contains NUL: {error}"))?;
+        let mut error = std::ptr::null_mut();
+        let status = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: callback and user_data are provided by the host.
+            unsafe {
+                (self.function)(
+                    self.user_data as *mut c_void,
+                    session_id.as_ptr(),
+                    &mut error,
+                )
+            }
+        }))
+        .map_err(|_| "session delete callback panicked".to_owned())?;
+        callback_status(status, error, "session delete")
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MemoryRecallCallback {
+    pub function: MemoryRecallCallbackFn,
+    pub user_data: usize,
+}
+
+impl MemoryRecallCallback {
+    pub(crate) fn invoke(self, query_json: &str) -> Result<String, String> {
+        let query_json = CString::new(query_json)
+            .map_err(|error| format!("memory query contains NUL: {error}"))?;
+        let mut error = std::ptr::null_mut();
+        let pointer = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: callback and user_data are provided by the host.
+            unsafe {
+                (self.function)(
+                    self.user_data as *mut c_void,
+                    query_json.as_ptr(),
+                    &mut error,
+                )
+            }
+        }))
+        .map_err(|_| "memory recall callback panicked".to_owned())?;
+        match callback_result(pointer, error, "memory recall")? {
+            Some(value) => Ok(value),
+            None => Err("memory recall callback returned NULL".to_owned()),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MemoryRememberCallback {
+    pub function: MemoryRememberCallbackFn,
+    pub user_data: usize,
+}
+
+impl MemoryRememberCallback {
+    pub(crate) fn invoke(self, entry_json: &str) -> Result<(), String> {
+        let entry_json = CString::new(entry_json)
+            .map_err(|error| format!("memory entry contains NUL: {error}"))?;
+        let mut error = std::ptr::null_mut();
+        let status = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: callback and user_data are provided by the host.
+            unsafe {
+                (self.function)(
+                    self.user_data as *mut c_void,
+                    entry_json.as_ptr(),
+                    &mut error,
+                )
+            }
+        }))
+        .map_err(|_| "memory remember callback panicked".to_owned())?;
+        callback_status(status, error, "memory remember")
+    }
+}
+
 pub(crate) fn take_callback_string(
     pointer: *mut c_char,
     callback_kind: &str,
@@ -147,4 +305,47 @@ pub(crate) fn take_callback_string(
     string
         .into_string()
         .map_err(|error| format!("{callback_kind} callback returned invalid UTF-8: {error}"))
+}
+
+fn callback_result(
+    pointer: *mut c_char,
+    error: *mut c_char,
+    callback_kind: &str,
+) -> Result<Option<String>, String> {
+    let error = take_optional_callback_string(error)?;
+    if let Some(error) = error {
+        if !pointer.is_null() {
+            // SAFETY: callback results must be allocated by kestrel_string_new.
+            drop(unsafe { CString::from_raw(pointer) });
+        }
+        return Err(error);
+    }
+    if pointer.is_null() {
+        Ok(None)
+    } else {
+        take_callback_string(pointer, callback_kind).map(Some)
+    }
+}
+
+fn callback_status(status: c_int, error: *mut c_char, callback_kind: &str) -> Result<(), String> {
+    let error = take_optional_callback_string(error)?;
+    if let Some(error) = error {
+        Err(error)
+    } else if status == 0 {
+        Ok(())
+    } else {
+        Err(format!("{callback_kind} callback returned status {status}"))
+    }
+}
+
+fn take_optional_callback_string(pointer: *mut c_char) -> Result<Option<String>, String> {
+    if pointer.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: callback errors must be allocated by kestrel_string_new.
+    let value = unsafe { CString::from_raw(pointer) };
+    value
+        .into_string()
+        .map(Some)
+        .map_err(|error| format!("callback error is not valid UTF-8: {error}"))
 }

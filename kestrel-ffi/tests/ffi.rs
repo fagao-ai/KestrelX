@@ -1,6 +1,6 @@
 use std::{
-    collections::VecDeque,
-    ffi::{CStr, CString, c_char, c_void},
+    collections::{HashMap, VecDeque},
+    ffi::{CStr, CString, c_char, c_int, c_void},
     fs,
     process::Command,
     ptr,
@@ -10,11 +10,14 @@ use std::{
 
 use kestrel::{AgentOutput, FinishReason, Message, ModelResponse, ToolCall, Usage};
 use kestrel_ffi::{
-    KestrelAgent, kestrel_agent_cancel, kestrel_agent_free, kestrel_agent_new,
-    kestrel_agent_new_with_model, kestrel_agent_register_tool, kestrel_agent_reset,
-    kestrel_agent_run, kestrel_agent_session_json, kestrel_agent_set_event_callback,
-    kestrel_agent_start_run, kestrel_agent_todos_json, kestrel_run_free, kestrel_run_is_done,
-    kestrel_run_next_event, kestrel_run_wait, kestrel_string_free, kestrel_string_new,
+    KestrelAgent, kestrel_agent_builder_build, kestrel_agent_builder_free,
+    kestrel_agent_builder_new_with_model, kestrel_agent_builder_set_memory,
+    kestrel_agent_builder_set_session_store, kestrel_agent_cancel, kestrel_agent_free,
+    kestrel_agent_new, kestrel_agent_new_with_model, kestrel_agent_register_tool,
+    kestrel_agent_reset, kestrel_agent_run, kestrel_agent_session_json,
+    kestrel_agent_set_event_callback, kestrel_agent_start_run, kestrel_agent_todos_json,
+    kestrel_run_free, kestrel_run_is_done, kestrel_run_next_event, kestrel_run_wait,
+    kestrel_string_free, kestrel_string_new,
 };
 use serde_json::{Value, json};
 
@@ -30,6 +33,12 @@ struct EventState {
 struct BlockingState {
     started: Barrier,
     release: Barrier,
+}
+
+#[derive(Default)]
+struct PersistenceState {
+    sessions: Mutex<HashMap<String, String>>,
+    memory: Mutex<Vec<Value>>,
 }
 
 unsafe extern "C" fn model_callback(
@@ -101,6 +110,91 @@ unsafe extern "C" fn echo_tool(
         })
         .to_string(),
     )
+}
+
+unsafe extern "C" fn session_load(
+    user_data: *mut c_void,
+    session_id: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut c_char {
+    unsafe { *error = ptr::null_mut() };
+    // SAFETY: test state outlives the callback.
+    let state = unsafe { &*(user_data as *const PersistenceState) };
+    // SAFETY: Kestrel passes a valid session id.
+    let id = unsafe { CStr::from_ptr(session_id) }.to_str().unwrap();
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(id)
+        .map(|json| allocate(json))
+        .unwrap_or(ptr::null_mut())
+}
+
+unsafe extern "C" fn session_save(
+    user_data: *mut c_void,
+    session_json: *const c_char,
+    error: *mut *mut c_char,
+) -> c_int {
+    unsafe { *error = ptr::null_mut() };
+    // SAFETY: test state outlives the callback.
+    let state = unsafe { &*(user_data as *const PersistenceState) };
+    // SAFETY: Kestrel passes valid JSON.
+    let json = unsafe { CStr::from_ptr(session_json) }
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let session: Value = serde_json::from_str(&json).unwrap();
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(session["id"].as_str().unwrap().to_owned(), json);
+    0
+}
+
+unsafe extern "C" fn session_delete(
+    user_data: *mut c_void,
+    session_id: *const c_char,
+    error: *mut *mut c_char,
+) -> c_int {
+    unsafe { *error = ptr::null_mut() };
+    // SAFETY: test state outlives the callback.
+    let state = unsafe { &*(user_data as *const PersistenceState) };
+    // SAFETY: Kestrel passes a valid session id.
+    let id = unsafe { CStr::from_ptr(session_id) }.to_str().unwrap();
+    state.sessions.lock().unwrap().remove(id);
+    0
+}
+
+unsafe extern "C" fn memory_recall(
+    user_data: *mut c_void,
+    _query_json: *const c_char,
+    error: *mut *mut c_char,
+) -> *mut c_char {
+    unsafe { *error = ptr::null_mut() };
+    // SAFETY: test state outlives the callback.
+    let state = unsafe { &*(user_data as *const PersistenceState) };
+    let entries = state.memory.lock().unwrap().clone();
+    allocate(&serde_json::to_string(&entries).unwrap())
+}
+
+unsafe extern "C" fn memory_remember(
+    user_data: *mut c_void,
+    entry_json: *const c_char,
+    error: *mut *mut c_char,
+) -> c_int {
+    unsafe { *error = ptr::null_mut() };
+    // SAFETY: test state outlives the callback.
+    let state = unsafe { &*(user_data as *const PersistenceState) };
+    // SAFETY: Kestrel passes valid JSON.
+    let entry = unsafe { CStr::from_ptr(entry_json) }.to_str().unwrap();
+    state
+        .memory
+        .lock()
+        .unwrap()
+        .push(serde_json::from_str(entry).unwrap());
+    0
 }
 
 fn allocate(value: &str) -> *mut c_char {
@@ -580,6 +674,172 @@ for line in sys.stdin:
     assert_eq!(tool_result["content"][0]["text"], "mcp:hello");
     // SAFETY: no run is active; this also closes MCP child processes.
     unsafe { kestrel_agent_free(agent) };
+}
+
+#[test]
+fn builder_persists_sessions_and_long_term_memory() {
+    let model_state = Box::new(ModelState {
+        responses: Mutex::new(VecDeque::from([
+            serde_json::to_string(&ModelResponse {
+                message: Message::assistant_with_tool_calls(
+                    "",
+                    vec![ToolCall {
+                        id: "remember-1".to_owned(),
+                        name: "memory_remember".to_owned(),
+                        arguments: json!({ "text": "The user lives in Shanghai" }),
+                    }],
+                ),
+                finish_reason: FinishReason::ToolCalls,
+                usage: Usage::default(),
+                model: Some("callback".to_owned()),
+                raw: None,
+            })
+            .unwrap(),
+            serde_json::to_string(&ModelResponse {
+                message: Message::assistant("first answer"),
+                finish_reason: FinishReason::Stop,
+                usage: Usage::default(),
+                model: Some("callback".to_owned()),
+                raw: None,
+            })
+            .unwrap(),
+            serde_json::to_string(&ModelResponse {
+                message: Message::assistant("second answer"),
+                finish_reason: FinishReason::Stop,
+                usage: Usage::default(),
+                model: Some("callback".to_owned()),
+                raw: None,
+            })
+            .unwrap(),
+        ])),
+        requests: Mutex::new(Vec::new()),
+    });
+    let persistence = Box::new(PersistenceState::default());
+    let config = CString::new(
+        json!({
+            "session_id": "persistent-session",
+            "openai": { "model": "callback" },
+            "memory": { "tools": true }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut error = ptr::null_mut();
+
+    // SAFETY: callback state outlives both agents.
+    let builder = unsafe {
+        kestrel_agent_builder_new_with_model(
+            config.as_ptr(),
+            Some(model_callback),
+            (&*model_state as *const ModelState).cast_mut().cast(),
+            &mut error,
+        )
+    };
+    assert!(!builder.is_null(), "{}", error_message(error));
+    // SAFETY: builder and pointer are valid.
+    assert_eq!(
+        unsafe {
+            kestrel_agent_builder_set_session_store(
+                builder,
+                Some(session_load),
+                Some(session_save),
+                Some(session_delete),
+                (&*persistence as *const PersistenceState).cast_mut().cast(),
+                &mut error,
+            )
+        },
+        0,
+        "{}",
+        error_message(error)
+    );
+    // SAFETY: builder and pointer are valid.
+    assert_eq!(
+        unsafe {
+            kestrel_agent_builder_set_memory(
+                builder,
+                Some(memory_recall),
+                Some(memory_remember),
+                (&*persistence as *const PersistenceState).cast_mut().cast(),
+                &mut error,
+            )
+        },
+        0,
+        "{}",
+        error_message(error)
+    );
+    // SAFETY: builder is valid.
+    let first_agent = unsafe { kestrel_agent_builder_build(builder, &mut error) };
+    assert!(!first_agent.is_null(), "{}", error_message(error));
+    // SAFETY: builder can be freed after build.
+    unsafe { kestrel_agent_builder_free(builder) };
+    let first_prompt = CString::new("first prompt").unwrap();
+    // SAFETY: agent and prompt are valid.
+    let first_output = unsafe { kestrel_agent_run(first_agent, first_prompt.as_ptr(), &mut error) };
+    assert!(!first_output.is_null(), "{}", error_message(error));
+    // SAFETY: output is owned by this call.
+    unsafe { kestrel_string_free(first_output) };
+    // SAFETY: no run is active.
+    unsafe { kestrel_agent_free(first_agent) };
+
+    // SAFETY: callback state remains valid.
+    let builder = unsafe {
+        kestrel_agent_builder_new_with_model(
+            config.as_ptr(),
+            Some(model_callback),
+            (&*model_state as *const ModelState).cast_mut().cast(),
+            &mut error,
+        )
+    };
+    assert!(!builder.is_null(), "{}", error_message(error));
+    // SAFETY: builder and pointer are valid.
+    assert_eq!(
+        unsafe {
+            kestrel_agent_builder_set_session_store(
+                builder,
+                Some(session_load),
+                Some(session_save),
+                Some(session_delete),
+                (&*persistence as *const PersistenceState).cast_mut().cast(),
+                &mut error,
+            )
+        },
+        0
+    );
+    // SAFETY: builder and pointer are valid.
+    assert_eq!(
+        unsafe {
+            kestrel_agent_builder_set_memory(
+                builder,
+                Some(memory_recall),
+                Some(memory_remember),
+                (&*persistence as *const PersistenceState).cast_mut().cast(),
+                &mut error,
+            )
+        },
+        0
+    );
+    // SAFETY: builder is valid.
+    let second_agent = unsafe { kestrel_agent_builder_build(builder, &mut error) };
+    assert!(!second_agent.is_null(), "{}", error_message(error));
+    // SAFETY: builder can be freed after build.
+    unsafe { kestrel_agent_builder_free(builder) };
+    let second_prompt = CString::new("second prompt").unwrap();
+    // SAFETY: agent and prompt are valid.
+    let second_output =
+        unsafe { kestrel_agent_run(second_agent, second_prompt.as_ptr(), &mut error) };
+    assert!(!second_output.is_null(), "{}", error_message(error));
+    // SAFETY: output is owned by this call.
+    unsafe { kestrel_string_free(second_output) };
+
+    let requests = model_state.requests.lock().unwrap();
+    let text = serde_json::to_string(requests.last().unwrap()).unwrap();
+    assert!(text.contains("first prompt"));
+    assert!(text.contains("first answer"));
+    assert!(text.contains("second prompt"));
+    assert!(text.contains("Shanghai"));
+    assert_eq!(persistence.memory.lock().unwrap().len(), 1);
+    // SAFETY: no run is active.
+    unsafe { kestrel_agent_free(second_agent) };
 }
 
 fn error_message(error: *mut c_char) -> String {

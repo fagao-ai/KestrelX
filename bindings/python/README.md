@@ -6,6 +6,7 @@ This is a small reference binding implemented with `ctypes`.
 cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
+PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 ```
 
 Set `KESTREL_FFI_PATH` when the shared library is not under `target/debug` or
@@ -42,3 +43,11 @@ run.close()
 `Agent.close()` and `Run.close()` wait for active runs and in-flight native
 callbacks. Do not call them from inside an event/tool/model callback; in async
 code, move blocking close/wait operations to `asyncio.to_thread`.
+
+`Agent(..., session_store=..., memory=...)` installs host-backed persistence.
+Objects follow the same protocols as the Rust traits:
+
+- session store: `load(id) -> dict | None`, `save(session)`, optional `delete(id)`
+- memory: `recall(query) -> list[dict]`, `remember(entry)`
+
+See `example_persistence.py` for an in-memory database example.

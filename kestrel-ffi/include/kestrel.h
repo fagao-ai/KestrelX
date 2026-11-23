@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 typedef struct KestrelAgent KestrelAgent;
+typedef struct KestrelAgentBuilder KestrelAgentBuilder;
 typedef struct KestrelRun KestrelRun;
 
 enum {
@@ -42,6 +43,37 @@ typedef char *(*KestrelModelCallback)(
     void *user_data,
     const char *request_json);
 
+/*
+ * Persistence callbacks receive error as a char** initialized to NULL.
+ * On failure allocate an error with kestrel_string_new and store it in *error.
+ * Returned load/recall strings are owned by Kestrel and must also be allocated
+ * with kestrel_string_new.
+ */
+typedef char *(*KestrelSessionLoadCallback)(
+    void *user_data,
+    const char *session_id,
+    char **error);
+
+typedef int32_t (*KestrelSessionSaveCallback)(
+    void *user_data,
+    const char *session_json,
+    char **error);
+
+typedef int32_t (*KestrelSessionDeleteCallback)(
+    void *user_data,
+    const char *session_id,
+    char **error);
+
+typedef char *(*KestrelMemoryRecallCallback)(
+    void *user_data,
+    const char *query_json,
+    char **error);
+
+typedef int32_t (*KestrelMemoryRememberCallback)(
+    void *user_data,
+    const char *entry_json,
+    char **error);
+
 const char *kestrel_version(void);
 
 /* Allocates a UTF-8 C string with Kestrel's allocator. */
@@ -66,6 +98,41 @@ KestrelAgent *kestrel_agent_new_with_model(
     KestrelModelCallback callback,
     void *user_data,
     char **error);
+
+/*
+ * Flexible construction path. Register persistence callbacks before build.
+ * The builder remains owned by the caller and can produce one agent.
+ */
+KestrelAgentBuilder *kestrel_agent_builder_new(
+    const char *config_json,
+    char **error);
+
+KestrelAgentBuilder *kestrel_agent_builder_new_with_model(
+    const char *config_json,
+    KestrelModelCallback callback,
+    void *user_data,
+    char **error);
+
+int32_t kestrel_agent_builder_set_session_store(
+    KestrelAgentBuilder *builder,
+    KestrelSessionLoadCallback load,
+    KestrelSessionSaveCallback save,
+    KestrelSessionDeleteCallback delete_callback,
+    void *user_data,
+    char **error);
+
+int32_t kestrel_agent_builder_set_memory(
+    KestrelAgentBuilder *builder,
+    KestrelMemoryRecallCallback recall,
+    KestrelMemoryRememberCallback remember,
+    void *user_data,
+    char **error);
+
+KestrelAgent *kestrel_agent_builder_build(
+    KestrelAgentBuilder *builder,
+    char **error);
+
+void kestrel_agent_builder_free(KestrelAgentBuilder *builder);
 
 void kestrel_agent_free(KestrelAgent *agent);
 

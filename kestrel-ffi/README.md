@@ -32,6 +32,7 @@ Main functions:
 | `kestrel_agent_set_event_callback` | receive `AgentEvent` JSON |
 | `kestrel_agent_run` | bidirectional blocking run for text input |
 | `kestrel_agent_run_message` | same, with a full `Message` JSON input |
+| `kestrel_agent_builder_*` | builder with host SessionStore/Memory callbacks |
 | `kestrel_agent_start_run` | nonblocking run handle |
 | `kestrel_run_next_event` | poll the per-run event queue |
 | `kestrel_run_wait` | wait for final output without blocking the start |
@@ -113,6 +114,35 @@ on a Tokio runtime thread.
 
 For `kestrel_agent_new_with_model`, `openai.model` is only used as the model's
 display name; no HTTP request is made.
+
+## Host persistence
+
+Use `kestrel_agent_builder_new` or `kestrel_agent_builder_new_with_model`, then
+register persistence before building:
+
+```c
+KestrelAgentBuilder *builder = kestrel_agent_builder_new(config_json, &error);
+kestrel_agent_builder_set_session_store(
+    builder, load_session, save_session, delete_session, store_ctx, &error);
+kestrel_agent_builder_set_memory(
+    builder, recall_memory, remember_memory, memory_ctx, &error);
+KestrelAgent *agent = kestrel_agent_builder_build(builder, &error);
+kestrel_agent_builder_free(builder);
+```
+
+Session callbacks:
+
+- load: return `Session` JSON, or NULL when not found
+- save: return 0 on success
+- delete: optional
+
+Memory callbacks:
+
+- recall: receive `MemoryQuery` JSON and return an array of `MemoryEntry` JSON
+- remember: receive `MemoryEntry` JSON and return 0 on success
+
+All callback-returned JSON and error strings must be allocated with
+`kestrel_string_new`; Kestrel takes ownership. Do not nest a builder build.
 
 ## Callback contracts
 
@@ -216,17 +246,18 @@ run and any in-flight host callbacks before returning.
 cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
+PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 ```
 
 The ctypes wrapper supports OpenAI config, custom model callbacks, tools, events,
 session snapshots, todos, reset, cancellation, and `start_run` /
-`next_event_async` / `wait_async`.
+`next_event_async` / `wait_async`, plus host-backed session and memory objects.
 
 ## Current limits
 
 - MCP is stdio-only and does not expose HTTP transport, sampling, or roots.
 - Skills use the core flat frontmatter parser.
-- No persistent SessionStore/Memory adapter through FFI; the agent handle keeps
-  in-memory state.
+- If no host SessionStore/Memory callbacks are registered, state remains
+  in-memory for the lifetime of the agent handle.
 - Custom model callbacks are non-token-streaming.
 - Event delivery is synchronous callback delivery, not a bounded queue.

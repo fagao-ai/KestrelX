@@ -8,7 +8,9 @@ use std::{
 };
 
 use kestrel::mcp::McpClient;
-use kestrel::{Agent, AgentOutput, Message, Model, RunOptions, Session, TodoList};
+use kestrel::{
+    Agent, AgentOutput, Memory, Message, Model, RunOptions, Session, SessionStore, TodoList,
+};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -80,14 +82,16 @@ impl Drop for RunLease {
     }
 }
 
-fn build_agent(
+pub(crate) fn build_agent(
     settings: Settings,
     model: Arc<dyn Model>,
     tracker: Arc<CallbackTracker>,
+    session_store: Option<Arc<dyn SessionStore>>,
+    memory: Option<Arc<dyn Memory>>,
 ) -> Result<Box<KestrelAgent>, String> {
     let events = EventSlot::default();
     let sink = Arc::new(CallbackEventSink::new(events.clone()));
-    let built = settings.build(model, sink)?;
+    let built = settings.build(model, sink, session_store, memory)?;
     Ok(Box::new(KestrelAgent {
         inner: built.agent,
         events,
@@ -122,7 +126,13 @@ pub unsafe extern "C" fn kestrel_agent_new(
         let config_json = unsafe { required_string(config_json, "config_json") }?;
         let settings = Settings::parse(&config_json)?;
         let model = settings.openai_model()?;
-        build_agent(settings, model, Arc::new(CallbackTracker::default()))
+        build_agent(
+            settings,
+            model,
+            Arc::new(CallbackTracker::default()),
+            None,
+            None,
+        )
     });
 
     match result {
@@ -164,7 +174,7 @@ pub unsafe extern "C" fn kestrel_agent_new_with_model(
             },
             tracker.clone(),
         );
-        build_agent(settings, model, tracker)
+        build_agent(settings, model, tracker, None, None)
     });
 
     match result {
