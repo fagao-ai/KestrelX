@@ -1,0 +1,32 @@
+[package]
+name = "kestrel"
+version = "0.1.0"
+edition = "2024"
+description = "A composable, scenario-agnostic agent core for Rust"
+
+[workspace]
+members = [".", "kestrel-ffi"]
+resolver = "3"
+
+[dependencies]
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+
+[features]
+default = ["openai", "subagent", "todo"]
+full = ["mcp", "openai", "skills", "subagent", "todo"]
+mcp = ["tokio/io-util", "tokio/process"]
+openai = ["dep:reqwest"]
+skills = []
+subagent = []
+todo = []
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

@@ -1,0 +1,175 @@
+# kestrel-ffi
+
+`kestrel-ffi` exposes the Kestrel agent runtime through a JSON-first C ABI. It is
+meant to be the base layer for Python, Node, Go, Ruby, JVM, or any other SDK.
+
+```bash
+cargo build -p kestrel-ffi --release
+```
+
+Artifacts:
+
+- `libkestrel_ffi.dylib` / `.so` / `kestrel_ffi.dll`
+- static library and rlib
+- header: [`include/kestrel.h`](include/kestrel.h)
+
+## API surface
+
+The opaque `KestrelAgent` handle owns:
+
+- the Rust agent and its conversation
+- an internal multithreaded Tokio runtime
+- an event callback slot
+- cancellation state
+
+Main functions:
+
+| Function | Purpose |
+|---|---|
+| `kestrel_agent_new` | OpenAI-compatible agent from config JSON |
+| `kestrel_agent_new_with_model` | agent backed by a host model callback |
+| `kestrel_agent_register_tool` | register a synchronous host tool |
+| `kestrel_agent_set_event_callback` | receive `AgentEvent` JSON |
+| `kestrel_agent_run` | bidirectional blocking run for text input |
+| `kestrel_agent_run_message` | same, with a full `Message` JSON input |
+| `kestrel_agent_cancel` | cancel the active run from any thread |
+| `kestrel_agent_session_json` | conversation snapshot |
+| `kestrel_agent_todos_json` | todo snapshot when enabled |
+| `kestrel_agent_reset` | clear history while retaining session ID |
+
+All JSON-returning functions return a newly allocated C string on success. Free
+it with `kestrel_string_free`. Errors use a `char **error` out-parameter and must
+also be freed with `kestrel_string_free`.
+
+## Configuration
+
+```json
+{
+  "system_prompt": "You are a concise assistant.",
+  "prompt_sections": ["Prefer short answers."],
+  "session_id": "user-42",
+  "max_turns": 16,
+  "temperature": 0.2,
+  "max_output_tokens": 2048,
+  "context_window": 128000,
+  "reserve_output_tokens": 4096,
+  "streaming": true,
+  "fail_on_tool_error": false,
+  "tool_choice": "auto",
+  "todo": true,
+  "memory": {
+    "enabled": true,
+    "tools": true,
+    "auto_recall": true,
+    "recall_limit": 5,
+    "max_context_tokens": 2000
+  },
+  "compression": {
+    "kind": "sliding",
+    "max_tokens": 80000
+  },
+  "subagent": {
+    "name": "delegate",
+    "description": "Delegate a self-contained task.",
+    "max_depth": 2
+  },
+  "openai": {
+    "model": "gpt-4.1-mini",
+    "api_key": "optional",
+    "base_url": "optional",
+    "context_window": 128000,
+    "timeout_seconds": 120,
+    "stream_usage": true
+  }
+}
+```
+
+`compression.kind` accepts `sliding` or `summarizing`. OpenAI credentials fall
+back to `OPENAI_API_KEY` and `OPENAI_BASE_URL`.
+
+For `kestrel_agent_new_with_model`, `openai.model` is only used as the model's
+display name; no HTTP request is made.
+
+## Callback contracts
+
+### Tool callback
+
+```c
+char *tool_callback(void *user_data, const char *call_id,
+                    const char *arguments_json);
+```
+
+Return either:
+
+- plain text, or
+- `ToolOutput` JSON such as `{"content":"ok","is_error":false}`.
+
+The return value must be allocated with `kestrel_string_new`; Kestrel takes
+ownership and frees it. The callback runs on a Tokio blocking-pool thread and
+must be thread-safe.
+
+### Model callback
+
+```c
+char *model_callback(void *user_data, const char *request_json);
+```
+
+`request_json` is a serialized `kestrel::ModelRequest`. Return a serialized
+`kestrel::ModelResponse`, allocated with `kestrel_string_new`.
+
+The custom callback path currently emits the final assistant text as one
+`model_delta` event. Native token-level streaming is implemented by the
+OpenAI-compatible provider.
+
+### Event callback
+
+```c
+void event_callback(void *user_data, const char *event_json);
+```
+
+The string is borrowed and valid only for the duration of the callback. Copy it
+before returning. Callbacks must be fast, must not block, and must not unwind.
+
+Events include:
+
+- `run_started`, `turn_started`
+- `model_delta` with `ModelDelta::Text` or `ModelDelta::ToolCall`
+- `model_completed`
+- `tool_started`, `tool_completed`
+- `memory_recalled`, `context_compressed`
+- `run_completed`, `run_failed`
+
+## Threading and lifetime rules
+
+- `kestrel_agent_run*` is synchronous and internally calls a blocking Tokio
+  runtime. Do not call it from a Tokio runtime thread.
+- Native SDKs should execute the blocking call on a worker thread.
+- `kestrel_agent_cancel` is thread-safe.
+- One agent accepts one active run at a time.
+- `user_data` pointers must stay valid until `kestrel_agent_free`.
+- Do not free an agent while a run is active.
+- Do not block indefinitely in an event callback.
+- Do not replace the event callback or free its `user_data` from inside the
+  callback itself.
+- A synchronous tool/model callback cannot be interrupted once entered. Cancel
+  takes effect at the next await/check point, but the blocking run waits for
+  already-started host callbacks to return before reporting cancellation. This
+  keeps `user_data` valid for the full callback lifetime.
+
+## Python reference binding
+
+```bash
+cargo build -p kestrel-ffi
+PYTHONPATH=bindings/python python3 bindings/python/example.py
+```
+
+The ctypes wrapper supports OpenAI config, custom model callbacks, tools, events,
+session snapshots, todos, reset, and cancellation.
+
+## Current limits
+
+- No HTTP MCP or Skills setup through FFI yet; use the Rust API for those.
+- No persistent SessionStore/Memory adapter through FFI; the agent handle keeps
+  in-memory state.
+- Custom model callbacks are non-token-streaming.
+- Event delivery is synchronous callback delivery, not a bounded queue.

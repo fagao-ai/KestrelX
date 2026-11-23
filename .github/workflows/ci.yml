@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: bash scripts/check-line-limits.sh
+      - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+      - run: cargo test --workspace --all-features
+      - run: cargo check -p kestrel --no-default-features
+      - name: Check isolated features
+        run: |
+          for feature in openai todo subagent mcp skills; do
+            cargo check -p kestrel --no-default-features --features "$feature"
+          done
+      - run: cc -fsyntax-only -x c -include kestrel-ffi/include/kestrel.h /dev/null
+      - run: cargo build -p kestrel-ffi
+      - run: PYTHONPATH=bindings/python python3 bindings/python/example.py
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
