@@ -77,6 +77,21 @@ also be freed with `kestrel_string_free`.
     "description": "Delegate a self-contained task.",
     "max_depth": 2
   },
+  "skills": {
+    "paths": ["./skills"],
+    "max_depth": 4
+  },
+  "mcp_servers": [
+    {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "env": {},
+      "cwd": ".",
+      "request_timeout_seconds": 30,
+      "protocol_version": "2025-06-18",
+      "client_name": "kestrel"
+    }
+  ],
   "openai": {
     "model": "gpt-4.1-mini",
     "api_key": "optional",
@@ -90,6 +105,11 @@ also be freed with `kestrel_string_free`.
 
 `compression.kind` accepts `sliding` or `summarizing`. OpenAI credentials fall
 back to `OPENAI_API_KEY` and `OPENAI_BASE_URL`.
+
+`skills.paths` may contain multiple directories; duplicate skill names are
+rejected. `mcp_servers` only supports stdio in the current release and connects
+during agent construction. Agent construction with MCP blocks and must not run
+on a Tokio runtime thread.
 
 For `kestrel_agent_new_with_model`, `openai.model` is only used as the model's
 display name; no HTTP request is made.
@@ -176,6 +196,7 @@ run and any in-flight host callbacks before returning.
 - `kestrel_agent_start_run*` is nonblocking, but `kestrel_run_next_event` and
   `kestrel_run_wait` are blocking C calls.
 - An agent should outlive all of its async run handles.
+- Agent construction with `mcp_servers` blocks while initializing MCP processes.
 - Native SDKs should execute the blocking call on a worker thread.
 - `kestrel_agent_cancel` is thread-safe.
 - One agent accepts one active run at a time.
@@ -203,7 +224,8 @@ session snapshots, todos, reset, cancellation, and `start_run` /
 
 ## Current limits
 
-- No HTTP MCP or Skills setup through FFI yet; use the Rust API for those.
+- MCP is stdio-only and does not expose HTTP transport, sampling, or roots.
+- Skills use the core flat frontmatter parser.
 - No persistent SessionStore/Memory adapter through FFI; the agent handle keeps
   in-memory state.
 - Custom model callbacks are non-token-streaming.

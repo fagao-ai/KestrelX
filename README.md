@@ -334,6 +334,14 @@ cargo build -p kestrel-ffi --release
   "todo": true,
   "memory": { "enabled": true, "tools": true },
   "compression": { "kind": "sliding", "max_tokens": 80000 },
+  "skills": { "paths": ["./skills"], "max_depth": 4 },
+  "mcp_servers": [
+    {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "request_timeout_seconds": 30
+    }
+  ],
   "openai": {
     "model": "gpt-4.1-mini",
     "api_key": "optional; falls back to OPENAI_API_KEY",
@@ -345,6 +353,9 @@ cargo build -p kestrel-ffi --release
 自定义模型通过 `kestrel_agent_new_with_model` 注册。callback 收到序列化的
 `ModelRequest`，返回序列化的 `ModelResponse`。自定义模型目前是单块 delta fallback；
 token 级 SSE 由内置 OpenAI provider 提供。
+
+`skills` 会在构造时加载并注入 catalog/`read_skill`；`mcp_servers` 会连接 stdio MCP
+并在构造时发现远端工具。包含 MCP 的构造会阻塞，且不能从 Tokio runtime 线程调用。
 
 `bindings/python/kestrel.py` 是可直接使用的 ctypes 参考绑定：
 
@@ -373,6 +384,7 @@ bindings/python     # ctypes 参考 SDK
   C 调用，语言 SDK 应放到 worker 或 executor。
 - FFI 的 tool callback 是同步回调；取消无法中断已经进入宿主 callback 的调用，但 run 会等
   在途 callback 返回后才报告取消，确保 `user_data` 生命周期安全。
+- 核心和 FFI 的 MCP 目前都只支持 stdio，尚未实现 HTTP transport。
 - 会话压缩会更新持久化历史；如需保留完整审计日志，应在 SessionStore 外单独存 event/audit。
 - 摘要压缩的额外模型调用，以及子 agent 的 token 用量，不计入父级 `AgentOutput.usage`。
 

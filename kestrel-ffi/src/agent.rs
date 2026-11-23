@@ -7,6 +7,7 @@ use std::{
     },
 };
 
+use kestrel::mcp::McpClient;
 use kestrel::{Agent, AgentOutput, Message, Model, RunOptions, Session, TodoList};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -29,6 +30,7 @@ pub struct KestrelAgent {
     pub(crate) inner: Agent,
     pub(crate) events: EventSlot,
     pub(crate) todos: Option<TodoList>,
+    pub(crate) mcp_clients: Vec<McpClient>,
     tracker: Arc<CallbackTracker>,
     running: Arc<AtomicBool>,
     cancellation: Arc<Mutex<Option<CancellationToken>>>,
@@ -90,6 +92,7 @@ fn build_agent(
         inner: built.agent,
         events,
         todos: built.todos,
+        mcp_clients: built.mcp_clients,
         tracker,
         running: Arc::new(AtomicBool::new(false)),
         cancellation: Arc::new(Mutex::new(None)),
@@ -187,7 +190,16 @@ pub unsafe extern "C" fn kestrel_agent_free(agent: *mut KestrelAgent) {
     }
     // SAFETY: ownership is transferred exactly once.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        drop(unsafe { Box::from_raw(agent) });
+        let mut agent = unsafe { Box::from_raw(agent) };
+        let clients = std::mem::take(&mut agent.mcp_clients);
+        if !clients.is_empty() {
+            let _ = block_on(async move {
+                for client in clients {
+                    let _ = client.close().await;
+                }
+            });
+        }
+        drop(agent);
     }));
 }
 

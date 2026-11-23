@@ -1,6 +1,8 @@
 use std::{
     collections::VecDeque,
     ffi::{CStr, CString, c_char, c_void},
+    fs,
+    process::Command,
     ptr,
     sync::{Barrier, Mutex, mpsc},
     time::Duration,
@@ -417,6 +419,166 @@ fn async_run_polls_events_and_waits_for_output() {
     // SAFETY: run is complete.
     unsafe { kestrel_run_free(run) };
     // SAFETY: no run is active.
+    unsafe { kestrel_agent_free(agent) };
+}
+
+#[test]
+fn loads_skills_and_injects_catalog() {
+    let root = tempfile::tempdir().unwrap();
+    let skill_dir = root.path().join("writer");
+    fs::create_dir(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: writer\ndescription: Write concise copy\n---\nUse short sentences.",
+    )
+    .unwrap();
+    let model_state = Box::new(ModelState {
+        responses: Mutex::new(VecDeque::from([serde_json::to_string(&ModelResponse {
+            message: Message::assistant("skills ready"),
+            finish_reason: FinishReason::Stop,
+            usage: Usage::default(),
+            model: Some("callback".to_owned()),
+            raw: None,
+        })
+        .unwrap()])),
+        requests: Mutex::new(Vec::new()),
+    });
+    let config = CString::new(
+        json!({
+            "openai": { "model": "callback" },
+            "skills": {
+                "paths": [root.path().to_string_lossy()]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut error = ptr::null_mut();
+    // SAFETY: state and root outlive the agent.
+    let agent = unsafe {
+        kestrel_agent_new_with_model(
+            config.as_ptr(),
+            Some(model_callback),
+            (&*model_state as *const ModelState).cast_mut().cast(),
+            &mut error,
+        )
+    };
+    assert!(!agent.is_null(), "{}", error_message(error));
+    let prompt = CString::new("write").unwrap();
+    // SAFETY: agent and prompt are valid.
+    let output = unsafe { kestrel_agent_run(agent, prompt.as_ptr(), &mut error) };
+    assert!(!output.is_null(), "{}", error_message(error));
+    // SAFETY: output is owned by this call.
+    unsafe { kestrel_string_free(output) };
+
+    let requests = model_state.requests.lock().unwrap();
+    let request = &requests[0];
+    assert!(
+        request["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "read_skill")
+    );
+    assert!(
+        request["messages"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Available skills")
+    );
+    // SAFETY: no run is active.
+    unsafe { kestrel_agent_free(agent) };
+}
+
+#[test]
+fn connects_stdio_mcp_server_and_registers_tools() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        return;
+    }
+    let server = r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "mock", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "echo", "description": "Echo via MCP", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}]}
+    elif method == "tools/call":
+        args = request.get("params", {}).get("arguments", {})
+        result = {"content": [{"type": "text", "text": "mcp:" + str(args.get("text", ""))}], "isError": False}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"#;
+    let model_state = Box::new(ModelState {
+        responses: Mutex::new(VecDeque::from([
+            serde_json::to_string(&ModelResponse {
+                message: Message::assistant_with_tool_calls(
+                    "",
+                    vec![ToolCall {
+                        id: "mcp-call".to_owned(),
+                        name: "echo".to_owned(),
+                        arguments: json!({ "text": "hello" }),
+                    }],
+                ),
+                finish_reason: FinishReason::ToolCalls,
+                usage: Usage::default(),
+                model: Some("callback".to_owned()),
+                raw: None,
+            })
+            .unwrap(),
+            serde_json::to_string(&ModelResponse {
+                message: Message::assistant("mcp complete"),
+                finish_reason: FinishReason::Stop,
+                usage: Usage::default(),
+                model: Some("callback".to_owned()),
+                raw: None,
+            })
+            .unwrap(),
+        ])),
+        requests: Mutex::new(Vec::new()),
+    });
+    let config = CString::new(
+        json!({
+            "openai": { "model": "callback" },
+            "mcp_servers": [{
+                "command": "python3",
+                "args": ["-u", "-c", server]
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut error = ptr::null_mut();
+    // SAFETY: model state outlives the agent.
+    let agent = unsafe {
+        kestrel_agent_new_with_model(
+            config.as_ptr(),
+            Some(model_callback),
+            (&*model_state as *const ModelState).cast_mut().cast(),
+            &mut error,
+        )
+    };
+    assert!(!agent.is_null(), "{}", error_message(error));
+    let prompt = CString::new("use mcp").unwrap();
+    // SAFETY: agent and prompt are valid.
+    let output = unsafe { kestrel_agent_run(agent, prompt.as_ptr(), &mut error) };
+    assert!(!output.is_null(), "{}", error_message(error));
+    // SAFETY: output is owned by this call.
+    unsafe { kestrel_string_free(output) };
+
+    let requests = model_state.requests.lock().unwrap();
+    let tool_result = requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .unwrap();
+    assert_eq!(tool_result["content"][0]["text"], "mcp:hello");
+    // SAFETY: no run is active; this also closes MCP child processes.
     unsafe { kestrel_agent_free(agent) };
 }
 
