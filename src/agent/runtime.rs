@@ -33,8 +33,12 @@ impl Agent {
             ));
         }
 
-        let _run_guard = self.state.run_lock.lock().await;
         let cancellation = options.cancellation.unwrap_or_default();
+        let _run_guard = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(Error::Cancelled),
+            guard = self.state.run_lock.lock() => guard,
+        };
         let sink = options
             .event_sink
             .clone()

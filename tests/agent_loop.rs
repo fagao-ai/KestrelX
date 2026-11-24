@@ -232,6 +232,42 @@ async fn cancels_in_flight_model_calls() {
 }
 
 #[tokio::test]
+async fn cancels_run_while_waiting_for_the_agent_lock() {
+    let model = BlockingModel::new();
+    let started = model.started();
+    let agent = Arc::new(Agent::builder(model).build().unwrap());
+    let first_cancellation = CancellationToken::new();
+    let second_cancellation = CancellationToken::new();
+
+    let first = {
+        let agent = agent.clone();
+        let token = first_cancellation.clone();
+        tokio::spawn(async move {
+            agent
+                .run_with("first", RunOptions::default().with_cancellation(token))
+                .await
+        })
+    };
+    started.notified().await;
+
+    let second = {
+        let agent = agent.clone();
+        let token = second_cancellation.clone();
+        tokio::spawn(async move {
+            agent
+                .run_with("second", RunOptions::default().with_cancellation(token))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    second_cancellation.cancel();
+    assert!(matches!(second.await.unwrap(), Err(Error::Cancelled)));
+
+    first_cancellation.cancel();
+    assert!(matches!(first.await.unwrap(), Err(Error::Cancelled)));
+}
+
+#[tokio::test]
 async fn persists_and_reloads_sessions() {
     let store = Arc::new(InMemorySessionStore::new());
     let first_model = Arc::new(ScriptedModel::new([text_response("first")]));
