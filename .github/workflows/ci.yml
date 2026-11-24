@@ -16,6 +16,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: bindings/go/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - run: cargo fmt --all -- --check
       - run: bash scripts/check-line-limits.sh
       - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
@@ -35,4 +38,6 @@ jobs:
       - run: test -z "$(gofmt -l bindings/go)"
       - run: cd bindings/go && go vet ./...
       - run: cd bindings/go && go test ./...
+      - run: cargo build -p kestrel-node
+      - run: cd bindings/node && node --test
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps

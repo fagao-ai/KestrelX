@@ -296,6 +296,23 @@ SessionStore/Memory interfaces, and context cancellation. The default cgo link
 path points at `target/debug`; release deployments should adjust
 `bindings/go/callbacks.go` or provide the same library layout.
 
+## Node reference binding
+
+`bindings/node` is a native napi-rs addon. It links the Kestrel core directly
+instead of going through the C ABI:
+
+```bash
+cargo build -p kestrel-node
+cd bindings/node
+node --test
+node example.js
+```
+
+It supports async JavaScript models and tools, event callbacks, OpenAI config,
+Todo, in-memory memory tools, compression, Skills, sub-agents, and TypeScript
+declarations. The initial addon does not yet expose JS-backed SessionStore,
+Memory, MCP config, or token streaming for custom JS models.
+
 ## Current limits
 
 - MCP supports stdio and Streamable HTTP, but not sampling, roots, or

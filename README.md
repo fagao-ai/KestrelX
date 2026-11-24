@@ -8,7 +8,7 @@ Kestrel 是一个场景无关、库优先的 Rust agent core。它不假设你�
 - 上下文压缩（滑动窗口 / LLM 摘要）
 - 会话持久化与长期记忆
 - 可选 Todo、子 agent、MCP、Skills
-- C ABI 与 Python/Go 参考绑定
+- C ABI 与 Python/Go/Node 参考绑定
 
 目标不是再做一个“什么都能做”的完整应用，而是让开发者用同一套内核构建自己的产品。
 
@@ -393,6 +393,15 @@ go test ./...
 go run ./examples/basic
 ```
 
+`bindings/node` 是 napi-rs 原生 addon：
+
+```bash
+cargo build -p kestrel-node
+cd bindings/node
+node --test
+node example.js
+```
+
 其他语言只需要实现 `kestrel.h` 中的函数指针和 JSON 编解码。详细 ABI、内存所有权与
 线程约束见 [`kestrel-ffi/README.md`](kestrel-ffi/README.md)。
 
@@ -401,6 +410,7 @@ kestrel             # 核心 Rust library
 kestrel-ffi         # C ABI + opaque agent + callback runtime
 bindings/python     # ctypes 参考 SDK
 bindings/go         # cgo 参考 SDK
+bindings/node       # napi-rs 原生 addon
 ```
 
 ## 当前边界
@@ -413,6 +423,7 @@ bindings/go         # cgo 参考 SDK
   C 调用，语言 SDK 应放到 worker 或 executor。
 - FFI 的 tool callback 是同步回调；取消无法中断已经进入宿主 callback 的调用，但 run 会等
   在途 callback 返回后才报告取消，确保 `user_data` 生命周期安全。
+- Node addon 目前未暴露 JS-backed SessionStore/Memory、MCP 配置和自定义模型 token 流。
 - 会话压缩会更新持久化历史；如需保留完整审计日志，应在 SessionStore 外单独存 event/audit。
 - 摘要压缩的额外模型调用，以及子 agent 的 token 用量，不计入父级 `AgentOutput.usage`。
 
@@ -433,6 +444,8 @@ PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
 cd bindings/go && go vet ./... && go test ./...
+cargo build -p kestrel-node
+cd bindings/node && node --test
 ```
 
 ## 目录
@@ -454,6 +467,7 @@ src/
 kestrel-ffi/
   include/      # C header
   src/          # opaque agent、callback、model/tool 适配
+kestrel-node/    # napi-rs Rust addon
 bindings/python/
   kestrel.py    # ctypes SDK
   example.py    # 离线 callback model + tool 示例
@@ -465,4 +479,8 @@ bindings/go/
   agent.go       # Agent/Run API
   callbacks.go   # cgo bridge 与 callback registry
   examples/      # 可运行示例
+bindings/node/
+  index.js       # native addon loader
+  index.d.ts     # TypeScript 定义
+  example.js     # Node 示例
 ```

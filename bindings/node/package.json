@@ -1,0 +1,11 @@
+{
+  "name": "kestrel-node",
+  "version": "0.1.0",
+  "description": "napi-rs binding for the Kestrel agent core",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "cargo build -p kestrel-node --manifest-path ../../Cargo.toml && node -e \"require('./index.js')\"",
+    "test": "node --test"
+  }
+}
