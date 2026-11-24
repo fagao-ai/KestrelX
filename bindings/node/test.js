@@ -351,6 +351,11 @@ test('createAgentAsync connects an HTTP MCP server', async () => {
   try {
     const output = await agent.run('use MCP');
     assert.equal(output.text, 'mcp:hello');
+
+    await agent.closeMcp();
+    calls = 0;
+    const afterClose = await agent.run('after MCP close');
+    assert.match(afterClose.text, /not registered/);
   } finally {
     await agent.closeMcp();
     agent.close();

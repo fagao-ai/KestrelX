@@ -132,7 +132,7 @@ agent.close();
 With a custom JavaScript model, pass it in the options object as usual. MCP
 stdio and Streamable HTTP servers are both supported. `agent.connectMcp()`
 and `agent.closeMcp()` are also available for adding or removing MCP tools at
-runtime.
+runtime. `closeMcp()` unregisters the remote tools and closes their transports.
 
 ## Host persistence
 

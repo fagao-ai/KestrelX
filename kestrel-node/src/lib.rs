@@ -474,6 +474,7 @@ pub struct Agent {
     events: EventSlot,
     todos: Option<TodoList>,
     mcp_clients: StdMutex<Vec<NodeMcpClient>>,
+    mcp_tools: StdMutex<Vec<String>>,
 }
 
 enum NodeMcpClient {
@@ -743,13 +744,22 @@ impl Agent {
     pub async fn connect_mcp(&self, servers: Value) -> Result<()> {
         let servers: Vec<McpServerSettings> =
             serde_json::from_value(servers).map_err(node_error)?;
+        let core = self.core()?.clone();
         let (clients, tools) = connect_mcp_servers(&servers).await.map_err(node_error)?;
-        if let Err(error) = self.core()?.tools().register_all(tools) {
+        let names = tools
+            .iter()
+            .map(|tool| tool.spec().name)
+            .collect::<Vec<_>>();
+        if let Err(error) = core.tools().register_all(tools) {
             for client in &clients {
                 client.close().await;
             }
             return Err(node_error(error));
         }
+        self.mcp_tools
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .extend(names);
         self.mcp_clients
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -760,6 +770,17 @@ impl Agent {
     /// Closes MCP connections while keeping the agent usable.
     #[napi]
     pub async fn close_mcp(&self) -> Result<()> {
+        let names = std::mem::take(
+            &mut *self
+                .mcp_tools
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        if let Some(core) = &self.inner {
+            for name in names {
+                core.tools().remove(&name);
+            }
+        }
         let clients = std::mem::take(
             &mut *self
                 .mcp_clients
@@ -897,6 +918,7 @@ fn build_agent(
         events,
         todos,
         mcp_clients: StdMutex::new(Vec::new()),
+        mcp_tools: StdMutex::new(Vec::new()),
     })
 }
 
