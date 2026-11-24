@@ -63,6 +63,7 @@ def main() -> None:
     config = {
         "session_id": "python-persisted-session",
         "streaming": False,
+        "memory": {"enabled": True},
         "openai": {"model": "python-persistence-callback"},
     }
 

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "system_prompt": "Be useful.",
+  "prompt_sections": ["Prefer short answers."],
+  "session_id": "contract-full",
+  "max_turns": 8,
+  "temperature": 0.2,
+  "max_output_tokens": 2048,
+  "context_window": 128000,
+  "reserve_output_tokens": 4096,
+  "streaming": true,
+  "fail_on_tool_error": false,
+  "tool_choice": "auto",
+  "todo": true,
+  "memory": {
+    "enabled": true,
+    "tools": true,
+    "auto_recall": true,
+    "recall_limit": 5,
+    "max_context_tokens": 2000
+  },
+  "compression": {
+    "kind": "summarizing",
+    "max_tokens": 80000,
+    "summary_tokens": 512
+  },
+  "subagent": {
+    "name": "delegate",
+    "description": "Delegate a task.",
+    "max_depth": 2
+  },
+  "skills": {
+    "paths": ["./skills"],
+    "max_depth": 4
+  },
+  "mcp_servers": [
+    {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    },
+    {
+      "url": "https://example.com/mcp",
+      "headers": {"Authorization": "Bearer token"}
+    }
+  ],
+  "openai": {
+    "model": "gpt-4.1-mini",
+    "timeout_seconds": 60,
+    "stream_usage": true
+  }
+}

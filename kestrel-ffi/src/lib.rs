@@ -10,6 +10,7 @@ mod agent;
 mod builder;
 mod callbacks;
 mod config;
+mod contract;
 mod event;
 mod model;
 mod persistence;
@@ -35,6 +36,7 @@ pub use callbacks::{
     ModelCallbackFn, SessionDeleteCallbackFn, SessionLoadCallbackFn, SessionSaveCallbackFn,
     StreamingModelCallbackFn, ToolCallbackFn,
 };
+pub use contract::{kestrel_capabilities_json, kestrel_contract_version, kestrel_validate_config};
 pub use run::{
     KestrelRun, kestrel_agent_start_run, kestrel_agent_start_run_message, kestrel_run_cancel,
     kestrel_run_free, kestrel_run_is_done, kestrel_run_next_event, kestrel_run_wait,

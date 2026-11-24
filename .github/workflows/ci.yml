@@ -35,6 +35,7 @@ jobs:
       - run: PYTHONPATH=bindings/python python3 bindings/python/example_async.py
       - run: PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
       - run: PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
+      - run: cd bindings/python && python3 -m unittest test_contract.py
       - run: test -z "$(gofmt -l bindings/go)"
       - run: cd bindings/go && go vet ./...
       - run: cd bindings/go && go test ./...

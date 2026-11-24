@@ -1,9 +1,44 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 
-const { createAgent } = require('./index.js');
+const {
+  capabilities,
+  contractVersion,
+  createAgent,
+  validateConfig,
+} = require('./index.js');
+
+test('contract version and capabilities', () => {
+  assert.equal(contractVersion(), 1);
+  assert.ok(capabilities().includes('streaming'));
+  assert.ok(!capabilities().includes('mcp_http'));
+});
+
+test('rejects unsupported MCP config', () => {
+  assert.throws(
+    () =>
+      createAgent({
+        schema_version: 1,
+        openai: { model: 'unused' },
+        mcp_servers: [{ url: 'https://example.com/mcp' }],
+      }),
+    /mcp_http/
+  );
+});
+
+test('validates shared fixture', () => {
+  const fixture = JSON.parse(
+    fs.readFileSync(
+      path.join(__dirname, '../../kestrel-contract/fixtures/minimal.json'),
+      'utf8'
+    )
+  );
+  validateConfig(fixture, false);
+});
 
 test('JavaScript model, tool, and streaming events', async () => {
   let calls = 0;

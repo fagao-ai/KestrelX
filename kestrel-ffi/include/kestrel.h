@@ -95,6 +95,16 @@ typedef int32_t (*KestrelMemoryRememberCallback)(
     char **error);
 
 const char *kestrel_version(void);
+uint32_t kestrel_contract_version(void);
+
+/* Returns a JSON array of capability names supported by this FFI build. */
+char *kestrel_capabilities_json(char **error);
+
+/* Returns 0 when config JSON is valid for this FFI build. */
+int32_t kestrel_validate_config(
+    const char *config_json,
+    int32_t has_custom_model,
+    char **error);
 
 /* Allocates a UTF-8 C string with Kestrel's allocator. */
 char *kestrel_string_new(const char *value);

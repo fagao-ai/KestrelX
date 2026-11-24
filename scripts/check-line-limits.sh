@@ -8,7 +8,7 @@ while IFS= read -r -d '' file; do
     echo "$file has $lines lines (limit: 1200)" >&2
     status=1
   fi
-done < <(find src kestrel-ffi/src kestrel-node/src tests kestrel-ffi/tests examples \
+done < <(find src kestrel-contract/src kestrel-ffi/src kestrel-node/src tests kestrel-ffi/tests examples \
   -type f -name '*.rs' -print0)
 
 exit "$status"

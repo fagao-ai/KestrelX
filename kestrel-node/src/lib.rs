@@ -6,10 +6,13 @@ use std::{
 use async_trait::async_trait;
 use kestrel::skills::SkillRegistry;
 use kestrel::{
-    Agent as CoreAgent, AgentConfig, AgentEvent, ContextCompressor, EventSink, InMemoryMemory,
-    MemoryOptions, Model, ModelRequest, ModelResponse, OpenAiCompatible, Result as CoreResult,
-    SlidingWindowCompressor, SubAgentTool, SummarizingCompressor, TodoList, Tool, ToolChoice,
-    ToolContext, ToolOutput, ToolSpec,
+    Agent as CoreAgent, AgentEvent, ContextCompressor, EventSink, InMemoryMemory, Model,
+    ModelRequest, ModelResponse, OpenAiCompatible, Result as CoreResult, SlidingWindowCompressor,
+    SubAgentTool, SummarizingCompressor, TodoList, Tool, ToolContext, ToolOutput, ToolSpec,
+};
+use kestrel_contract::{
+    AgentConfig as WireConfig, Capability, CapabilitySet, CompressionKind, OpenAiSettings,
+    SCHEMA_VERSION,
 };
 use napi::{
     Error, Result, Status,
@@ -17,7 +20,6 @@ use napi::{
     threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode, UnknownReturnValue},
 };
 use napi_derive::napi;
-use serde::Deserialize;
 use serde_json::Value;
 
 type ModelFn = ThreadsafeFunction<Value, Promise<Value>, Value, Status, false>;
@@ -32,6 +34,42 @@ type EventFn = ThreadsafeFunction<Value, UnknownReturnValue, Value, Status, fals
 
 fn node_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
+}
+
+fn node_capabilities() -> CapabilitySet {
+    CapabilitySet::new([
+        Capability::OpenAi,
+        Capability::CustomModel,
+        Capability::Streaming,
+        Capability::Todo,
+        Capability::Memory,
+        Capability::CompressionSliding,
+        Capability::CompressionSummarizing,
+        Capability::Subagent,
+        Capability::Skills,
+        Capability::HostTools,
+    ])
+}
+
+/// Returns the shared configuration schema version.
+#[napi]
+pub fn contract_version() -> u32 {
+    SCHEMA_VERSION
+}
+
+/// Returns capabilities implemented by this Node addon.
+#[napi]
+pub fn capabilities() -> Vec<&'static str> {
+    node_capabilities().names()
+}
+
+/// Validates config JSON against the shared contract and Node capabilities.
+#[napi]
+pub fn validate_config(config: Value, has_custom_model: bool) -> Result<()> {
+    let config = WireConfig::parse_value(config).map_err(node_error)?;
+    config
+        .validate(has_custom_model, &node_capabilities())
+        .map_err(node_error)
 }
 
 fn build_model_callback(
@@ -184,11 +222,14 @@ pub fn create_agent(
     model: Option<Function<'static, Value, Promise<Value>>>,
     event_handler: Option<Function<'static, Value, UnknownReturnValue>>,
 ) -> Result<Agent> {
-    let config: NodeConfig = serde_json::from_value(config).map_err(node_error)?;
+    let config = WireConfig::parse_value(config).map_err(node_error)?;
+    config
+        .validate(model.is_some(), &node_capabilities())
+        .map_err(node_error)?;
     let events = EventSlot::default();
     events.set(event_handler)?;
     let model = model.map(build_model_callback).transpose()?;
-    config.build(model, events).map_err(node_error)
+    build_agent(config, model, events).map_err(node_error)
 }
 
 #[napi]
@@ -262,283 +303,115 @@ impl Agent {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(default)]
-#[serde(deny_unknown_fields)]
-struct NodeConfig {
-    system_prompt: Option<String>,
-    prompt_sections: Vec<String>,
-    session_id: Option<String>,
-    max_turns: usize,
-    temperature: Option<f32>,
-    max_output_tokens: Option<u32>,
-    context_window: Option<usize>,
-    reserve_output_tokens: usize,
-    streaming: bool,
-    fail_on_tool_error: bool,
-    tool_choice: Option<ToolChoice>,
-    todo: bool,
-    memory: MemorySettings,
-    compression: Option<CompressionSettings>,
-    subagent: Option<SubagentSettings>,
-    skills: Option<SkillsSettings>,
-    openai: OpenAiSettings,
-}
+fn build_agent(
+    config: WireConfig,
+    model: Option<Arc<ModelFn>>,
+    events: EventSlot,
+) -> CoreResult<Agent> {
+    let model = match model {
+        Some(callback) => Arc::new(JsModel {
+            name: if config.openai.model.is_empty() {
+                "js-model".to_owned()
+            } else {
+                config.openai.model.clone()
+            },
+            context_window: config.context_window.or(config.openai.context_window),
+            callback,
+        }) as Arc<dyn Model>,
+        None => Arc::new(build_openai(&config.openai)?) as Arc<dyn Model>,
+    };
 
-impl Default for NodeConfig {
-    fn default() -> Self {
-        Self {
-            system_prompt: None,
-            prompt_sections: Vec::new(),
-            session_id: None,
-            max_turns: 16,
-            temperature: None,
-            max_output_tokens: None,
-            context_window: None,
-            reserve_output_tokens: 4_096,
-            streaming: true,
-            fail_on_tool_error: false,
-            tool_choice: None,
-            todo: false,
-            memory: MemorySettings::default(),
-            compression: None,
-            subagent: None,
-            skills: None,
-            openai: OpenAiSettings::default(),
+    let mut builder = CoreAgent::builder(model.clone())
+        .config(config.core_config())
+        .event_sink(Arc::new(JsEventSink {
+            slot: events.clone(),
+        }));
+    if let Some(system_prompt) = config.system_prompt.clone() {
+        builder = builder.system_prompt(system_prompt);
+    }
+    for section in config.prompt_sections.iter().cloned() {
+        builder = builder.prompt_section(section);
+    }
+    if let Some(session_id) = config.session_id.clone() {
+        builder = builder.session_id(session_id);
+    }
+    if let Some(skills) = &config.skills {
+        let mut registry = SkillRegistry::default();
+        for path in &skills.paths {
+            let loaded = SkillRegistry::load_dir_with_depth(path, skills.max_depth)?;
+            for skill in loaded.skills() {
+                registry.insert((*skill).clone())?;
+            }
+        }
+        builder = registry.install(builder);
+    }
+
+    let mut todos = None;
+    if config.todo {
+        let list = TodoList::new();
+        builder = list.install(builder);
+        todos = Some(list);
+    }
+
+    if config.memory.enabled {
+        builder = builder
+            .memory(Arc::new(InMemoryMemory::new()))
+            .memory_options(config.memory_options());
+        if config.memory.tools {
+            builder = builder.with_memory_tools();
         }
     }
-}
 
-impl NodeConfig {
-    fn build(self, model: Option<Arc<ModelFn>>, events: EventSlot) -> CoreResult<Agent> {
-        let model = match model {
-            Some(callback) => Arc::new(JsModel {
-                name: if self.openai.model.is_empty() {
-                    "js-model".to_owned()
-                } else {
-                    self.openai.model.clone()
-                },
-                context_window: self.context_window.or(self.openai.context_window),
-                callback,
-            }) as Arc<dyn Model>,
-            None => Arc::new(self.openai.build()?) as Arc<dyn Model>,
+    if let Some(compression) = &config.compression {
+        let compressor: Arc<dyn ContextCompressor> = match compression.kind {
+            CompressionKind::Sliding => {
+                Arc::new(SlidingWindowCompressor::new(compression.max_tokens))
+            }
+            CompressionKind::Summarizing => {
+                let mut compressor = SummarizingCompressor::new(model, compression.max_tokens);
+                if let Some(tokens) = compression.summary_tokens {
+                    compressor = compressor.with_summary_tokens(tokens);
+                }
+                Arc::new(compressor)
+            }
         };
+        builder = builder.compressor(compressor);
+    }
 
-        let mut config = AgentConfig {
-            max_turns: self.max_turns,
-            temperature: self.temperature,
-            max_output_tokens: self.max_output_tokens,
-            context_window: self.context_window,
-            reserve_output_tokens: self.reserve_output_tokens,
-            streaming: self.streaming,
-            fail_on_tool_error: self.fail_on_tool_error,
-            ..Default::default()
-        };
-        if let Some(tool_choice) = self.tool_choice {
-            config.tool_choice = tool_choice;
-        }
-
-        let mut builder = CoreAgent::builder(model.clone())
-            .config(config)
-            .event_sink(Arc::new(JsEventSink {
-                slot: events.clone(),
-            }));
-        if let Some(system_prompt) = self.system_prompt {
-            builder = builder.system_prompt(system_prompt);
-        }
-        for section in self.prompt_sections {
-            builder = builder.prompt_section(section);
-        }
-        if let Some(session_id) = self.session_id {
-            builder = builder.session_id(session_id);
-        }
-        if let Some(skills) = self.skills {
-            let depth = skills.max_depth();
-            let mut registry = SkillRegistry::default();
-            for path in skills.paths {
-                let loaded = SkillRegistry::load_dir_with_depth(&path, depth)?;
-                for skill in loaded.skills() {
-                    registry.insert((*skill).clone())?;
-                }
-            }
-            builder = registry.install(builder);
-        }
-
-        let mut todos = None;
-        if self.todo {
-            let list = TodoList::new();
-            builder = list.install(builder);
-            todos = Some(list);
-        }
-
-        if self.memory.enabled {
-            builder = builder
-                .memory(Arc::new(InMemoryMemory::new()))
-                .memory_options(MemoryOptions {
-                    auto_recall: self.memory.auto_recall,
-                    recall_limit: self.memory.recall_limit,
-                    max_context_tokens: self.memory.max_context_tokens,
-                });
-            if self.memory.tools {
-                builder = builder.with_memory_tools();
-            }
-        } else if self.memory.tools {
-            return Err(kestrel::Error::Configuration(
-                "memory.tools requires memory.enabled".to_owned(),
-            ));
-        }
-
-        if let Some(compression) = self.compression {
-            if compression.max_tokens == 0 {
-                return Err(kestrel::Error::Configuration(
-                    "compression.max_tokens must be greater than zero".to_owned(),
-                ));
-            }
-            let compressor: Arc<dyn ContextCompressor> = match compression.kind {
-                CompressionKind::Sliding => {
-                    Arc::new(SlidingWindowCompressor::new(compression.max_tokens))
-                }
-                CompressionKind::Summarizing => {
-                    let mut compressor = SummarizingCompressor::new(model, compression.max_tokens);
-                    if let Some(tokens) = compression.summary_tokens {
-                        compressor = compressor.with_summary_tokens(tokens);
-                    }
-                    Arc::new(compressor)
-                }
-            };
-            builder = builder.compressor(compressor);
-        }
-
-        let inner = builder.build()?;
-        if let Some(subagent) = self.subagent {
-            let tool = SubAgentTool::from_agent(subagent.name, subagent.description, &inner)
+    let inner = builder.build()?;
+    if let Some(subagent) = &config.subagent {
+        let tool =
+            SubAgentTool::from_agent(subagent.name.clone(), subagent.description.clone(), &inner)
                 .with_max_depth(subagent.max_depth);
-            inner.register_tool(Arc::new(tool))?;
-        }
-        Ok(Agent {
-            inner: Some(inner),
-            events,
-            todos,
-        })
+        inner.register_tool(Arc::new(tool))?;
     }
+    Ok(Agent {
+        inner: Some(inner),
+        events,
+        todos,
+    })
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-struct OpenAiSettings {
-    model: String,
-    api_key: Option<String>,
-    base_url: Option<String>,
-    context_window: Option<usize>,
-    timeout_seconds: Option<u64>,
-    stream_usage: Option<bool>,
-}
-
-impl OpenAiSettings {
-    fn build(&self) -> CoreResult<OpenAiCompatible> {
-        if self.model.trim().is_empty() {
-            return Err(kestrel::Error::Configuration(
-                "openai.model is required when no JavaScript model is supplied".to_owned(),
-            ));
-        }
-        let mut builder = OpenAiCompatible::builder(&self.model);
-        if let Some(api_key) = &self.api_key {
-            builder = builder.api_key(api_key);
-        } else if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
-            builder = builder.api_key(api_key);
-        }
-        if let Some(base_url) = &self.base_url {
-            builder = builder.base_url(base_url);
-        } else if let Ok(base_url) = std::env::var("OPENAI_BASE_URL") {
-            builder = builder.base_url(base_url);
-        }
-        if let Some(tokens) = self.context_window {
-            builder = builder.context_window(tokens);
-        }
-        if let Some(seconds) = self.timeout_seconds {
-            if seconds == 0 {
-                return Err(kestrel::Error::Configuration(
-                    "openai.timeout_seconds must be greater than zero".to_owned(),
-                ));
-            }
-            builder = builder.timeout(Duration::from_secs(seconds));
-        }
-        if let Some(stream_usage) = self.stream_usage {
-            builder = builder.stream_usage(stream_usage);
-        }
-        builder.build()
+fn build_openai(settings: &OpenAiSettings) -> CoreResult<OpenAiCompatible> {
+    let mut builder = OpenAiCompatible::builder(&settings.model);
+    if let Some(api_key) = &settings.api_key {
+        builder = builder.api_key(api_key);
+    } else if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+        builder = builder.api_key(api_key);
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-struct MemorySettings {
-    enabled: bool,
-    tools: bool,
-    auto_recall: bool,
-    recall_limit: usize,
-    max_context_tokens: usize,
-}
-
-impl Default for MemorySettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            tools: false,
-            auto_recall: true,
-            recall_limit: 5,
-            max_context_tokens: 2_000,
-        }
+    if let Some(base_url) = &settings.base_url {
+        builder = builder.base_url(base_url);
+    } else if let Ok(base_url) = std::env::var("OPENAI_BASE_URL") {
+        builder = builder.base_url(base_url);
     }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-struct SkillsSettings {
-    paths: Vec<String>,
-    max_depth: usize,
-}
-
-impl SkillsSettings {
-    fn max_depth(&self) -> usize {
-        if self.max_depth == 0 {
-            4
-        } else {
-            self.max_depth
-        }
+    if let Some(tokens) = settings.context_window {
+        builder = builder.context_window(tokens);
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct CompressionSettings {
-    #[serde(default)]
-    kind: CompressionKind,
-    max_tokens: usize,
-    summary_tokens: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum CompressionKind {
-    #[default]
-    Sliding,
-    Summarizing,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-struct SubagentSettings {
-    name: String,
-    description: String,
-    max_depth: usize,
-}
-
-impl Default for SubagentSettings {
-    fn default() -> Self {
-        Self {
-            name: "delegate".to_owned(),
-            description: "Delegate a self-contained task to a child agent.".to_owned(),
-            max_depth: 2,
-        }
+    if let Some(seconds) = settings.timeout_seconds {
+        builder = builder.timeout(Duration::from_secs(seconds));
     }
+    if let Some(stream_usage) = settings.stream_usage {
+        builder = builder.stream_usage(stream_usage);
+    }
+    builder.build()
 }

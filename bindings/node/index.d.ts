@@ -87,6 +87,13 @@ export type ToolHandler = (
 ) => Promise<ToolOutput | string>;
 export type EventHandler = (event: AgentEvent) => void;
 
+export declare function contractVersion(): number;
+export declare function capabilities(): string[];
+export declare function validateConfig(
+  config: Record<string, unknown>,
+  hasCustomModel?: boolean
+): void;
+
 export declare function createAgent(
   config: Record<string, unknown>,
   model?: ModelHandler,

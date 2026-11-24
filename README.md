@@ -342,6 +342,7 @@ cargo build -p kestrel-ffi --release
 
 ```json
 {
+  "schema_version": 1,
   "system_prompt": "You are a concise assistant.",
   "session_id": "user-42",
   "max_turns": 8,
@@ -373,6 +374,10 @@ cargo build -p kestrel-ffi --release
 `skills` 会在构造时加载并注入 catalog/`read_skill`；`mcp_servers` 会连接 stdio 或
 Streamable HTTP MCP 并在构造时发现远端工具。包含 MCP 的构造会阻塞，且不能从 Tokio
 runtime 线程调用。
+
+配置契约由独立 `kestrel-contract` crate 提供。各 SDK 使用同一份 schema、
+`schema_version`、capability 集合和 `fixtures/` 测试数据；不支持的配置字段或能力会
+在构造 Agent 前明确报错，而不是被静默忽略。
 
 `bindings/python/kestrel.py` 是可直接使用的 ctypes 参考绑定：
 
@@ -408,6 +413,7 @@ node example.js
 ```text
 kestrel             # 核心 Rust library
 kestrel-ffi         # C ABI + opaque agent + callback runtime
+kestrel-contract    # 版本化配置 schema 与 capability 校验
 bindings/python     # ctypes 参考 SDK
 bindings/go         # cgo 参考 SDK
 bindings/node       # napi-rs 原生 addon
@@ -443,6 +449,7 @@ PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
+cd bindings/python && python3 -m unittest test_contract.py
 cd bindings/go && go vet ./... && go test ./...
 cargo build -p kestrel-node
 cd bindings/node && node --test
@@ -467,6 +474,7 @@ src/
 kestrel-ffi/
   include/      # C header
   src/          # opaque agent、callback、model/tool 适配
+kestrel-contract/ # 共享配置 schema、capability、golden fixtures
 kestrel-node/    # napi-rs Rust addon
 bindings/python/
   kestrel.py    # ctypes SDK

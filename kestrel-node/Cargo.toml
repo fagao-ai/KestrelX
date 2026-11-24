@@ -12,6 +12,7 @@ async-trait = "0.1"
 napi = { version = "3", features = ["async", "serde-json", "tokio_rt"] }
 napi-derive = "3"
 kestrel = { path = "..", features = ["skills"] }
+kestrel-contract = { path = "../kestrel-contract" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "time"] }

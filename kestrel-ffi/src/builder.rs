@@ -14,7 +14,7 @@ use crate::{
         SessionDeleteCallbackFn, SessionLoadCallback, SessionLoadCallbackFn, SessionSaveCallback,
         SessionSaveCallbackFn, StreamingModelCallback, StreamingModelCallbackFn,
     },
-    config::Settings,
+    config::{Settings, SettingsExt, parse_settings},
     ffi_catch,
     persistence::{CallbackMemory, CallbackSessionStore},
     strings::{clear_error, required_string, set_error},
@@ -68,7 +68,7 @@ pub unsafe extern "C" fn kestrel_agent_builder_new(
     unsafe { clear_error(error) };
     let result = ffi_catch(|| {
         let config_json = unsafe { required_string(config_json, "config_json") }?;
-        let settings = Settings::parse(&config_json)?;
+        let settings = parse_settings(&config_json, false)?;
         Ok(KestrelAgentBuilder::new(settings, ModelSource::OpenAi))
     });
     match result {
@@ -97,7 +97,7 @@ pub unsafe extern "C" fn kestrel_agent_builder_new_with_model(
     unsafe { clear_error(error) };
     let result = ffi_catch(|| {
         let config_json = unsafe { required_string(config_json, "config_json") }?;
-        let settings = Settings::parse(&config_json)?;
+        let settings = parse_settings(&config_json, true)?;
         let callback = callback.ok_or_else(|| "model callback must not be NULL".to_owned())?;
         Ok(KestrelAgentBuilder::new(
             settings,
@@ -133,7 +133,7 @@ pub unsafe extern "C" fn kestrel_agent_builder_new_with_streaming_model(
     unsafe { clear_error(error) };
     let result = ffi_catch(|| {
         let config_json = unsafe { required_string(config_json, "config_json") }?;
-        let settings = Settings::parse(&config_json)?;
+        let settings = parse_settings(&config_json, true)?;
         let callback = callback.ok_or_else(|| "model callback must not be NULL".to_owned())?;
         Ok(KestrelAgentBuilder::new(
             settings,

@@ -63,6 +63,14 @@ agent, err := kestrel.New(
 )
 ```
 
+Contract helpers:
+
+```go
+kestrel.ContractVersion()
+capabilities, err := kestrel.Capabilities()
+err = kestrel.ValidateConfig(config, true)
+```
+
 ## Callback constraints
 
 - Event, model, and tool callbacks run synchronously on native threads.

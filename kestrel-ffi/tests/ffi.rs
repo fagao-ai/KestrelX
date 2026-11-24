@@ -17,8 +17,9 @@ use kestrel_ffi::{
     kestrel_agent_new, kestrel_agent_new_with_model, kestrel_agent_new_with_streaming_model,
     kestrel_agent_register_tool, kestrel_agent_reset, kestrel_agent_run,
     kestrel_agent_session_json, kestrel_agent_set_event_callback, kestrel_agent_start_run,
-    kestrel_agent_todos_json, kestrel_run_free, kestrel_run_is_done, kestrel_run_next_event,
-    kestrel_run_wait, kestrel_string_free, kestrel_string_new,
+    kestrel_agent_todos_json, kestrel_capabilities_json, kestrel_contract_version,
+    kestrel_run_free, kestrel_run_is_done, kestrel_run_next_event, kestrel_run_wait,
+    kestrel_string_free, kestrel_string_new, kestrel_validate_config,
 };
 use serde_json::{Value, json};
 
@@ -963,7 +964,7 @@ fn builder_persists_sessions_and_long_term_memory() {
         json!({
             "session_id": "persistent-session",
             "openai": { "model": "callback" },
-            "memory": { "tools": true }
+            "memory": { "enabled": true, "tools": true }
         })
         .to_string(),
     )
@@ -1084,6 +1085,39 @@ fn builder_persists_sessions_and_long_term_memory() {
     assert_eq!(persistence.memory.lock().unwrap().len(), 1);
     // SAFETY: no run is active.
     unsafe { kestrel_agent_free(second_agent) };
+}
+
+#[test]
+fn exposes_versioned_contract_and_capabilities() {
+    assert_eq!(kestrel_contract_version(), 1);
+    let mut error = ptr::null_mut();
+    // SAFETY: error pointer is valid.
+    let capabilities_ptr = unsafe { kestrel_capabilities_json(&mut error) };
+    assert!(!capabilities_ptr.is_null(), "{}", error_message(error));
+    // SAFETY: capabilities is allocated by Kestrel.
+    let capabilities: Value = serde_json::from_str(
+        unsafe { CStr::from_ptr(capabilities_ptr) }
+            .to_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        capabilities
+            .as_array()
+            .unwrap()
+            .contains(&json!("mcp_http"))
+    );
+    // SAFETY: ownership is released once.
+    unsafe { kestrel_string_free(capabilities_ptr) };
+}
+
+#[test]
+fn validates_shared_full_fixture() {
+    let fixture = CString::new(include_str!("../../kestrel-contract/fixtures/full.json")).unwrap();
+    let mut error = ptr::null_mut();
+    // SAFETY: fixture and error pointers are valid.
+    let status = unsafe { kestrel_validate_config(fixture.as_ptr(), 1, &mut error) };
+    assert_eq!(status, 0, "{}", error_message(error));
 }
 
 fn error_message(error: *mut c_char) -> String {

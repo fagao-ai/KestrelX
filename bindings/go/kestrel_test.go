@@ -282,7 +282,7 @@ func TestGoSessionStoreAndMemory(t *testing.T) {
 		"session_id": "go-persisted-session",
 		"streaming":  true,
 		"openai":     map[string]any{"model": "go-callback"},
-		"memory":     map[string]any{"tools": true},
+		"memory":     map[string]any{"enabled": true, "tools": true},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

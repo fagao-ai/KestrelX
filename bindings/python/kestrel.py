@@ -91,6 +91,18 @@ def load_library(path: Optional[str] = None) -> ctypes.CDLL:
     library = ctypes.CDLL(str(library_path))
     library.kestrel_version.argtypes = []
     library.kestrel_version.restype = ctypes.c_char_p
+    library.kestrel_contract_version.argtypes = []
+    library.kestrel_contract_version.restype = ctypes.c_uint32
+    library.kestrel_capabilities_json.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_capabilities_json.restype = ctypes.c_void_p
+    library.kestrel_validate_config.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_validate_config.restype = ctypes.c_int32
     library.kestrel_string_new.argtypes = [ctypes.c_char_p]
     library.kestrel_string_new.restype = ctypes.c_void_p
     library.kestrel_string_free.argtypes = [ctypes.c_void_p]
@@ -237,6 +249,52 @@ def load_library(path: Optional[str] = None) -> ctypes.CDLL:
     ]
     library.kestrel_agent_reset.restype = ctypes.c_int32
     return library
+
+
+def _take_contract_string(library: ctypes.CDLL, pointer: int) -> str:
+    value = ctypes.string_at(pointer).decode()
+    library.kestrel_string_free(pointer)
+    return value
+
+
+def _take_contract_error(library: ctypes.CDLL, error: ctypes.c_void_p) -> str:
+    if not error:
+        return "unknown contract error"
+    return _take_contract_string(library, error)
+
+
+def contract_version(library: Optional[ctypes.CDLL] = None) -> int:
+    """Returns the shared configuration schema version."""
+    lib = library or load_library()
+    return int(lib.kestrel_contract_version())
+
+
+def capabilities(library: Optional[ctypes.CDLL] = None) -> list[str]:
+    """Returns capability names supported by the FFI build."""
+    lib = library or load_library()
+    error = ctypes.c_void_p()
+    pointer = lib.kestrel_capabilities_json(ctypes.byref(error))
+    if not pointer:
+        raise KestrelError(_take_contract_error(lib, error))
+    return json.loads(_take_contract_string(lib, pointer))
+
+
+def validate_config(
+    config: Union[dict[str, Any], str],
+    has_custom_model: bool = False,
+    library: Optional[ctypes.CDLL] = None,
+) -> None:
+    """Validates config against the shared schema and FFI capabilities."""
+    lib = library or load_library()
+    config_json = config if isinstance(config, str) else json.dumps(config)
+    error = ctypes.c_void_p()
+    status = lib.kestrel_validate_config(
+        config_json.encode(),
+        1 if has_custom_model else 0,
+        ctypes.byref(error),
+    )
+    if status != 0:
+        raise KestrelError(_take_contract_error(lib, error))
 
 
 class Agent:

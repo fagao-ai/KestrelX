@@ -18,7 +18,7 @@ use crate::{
         CallbackTracker, EventCallback, EventCallbackFn, ModelCallback, ModelCallbackFn,
         StreamingModelCallback, StreamingModelCallbackFn, ToolCallback, ToolCallbackFn,
     },
-    config::{McpConnection, Settings},
+    config::{McpConnection, Settings, SettingsExt, parse_settings},
     event::{CallbackEventSink, EventSlot},
     ffi_catch,
     runtime::block_on,
@@ -123,7 +123,7 @@ pub unsafe extern "C" fn kestrel_agent_new(
     let result = ffi_catch(|| {
         // SAFETY: config_json is required by the C contract.
         let config_json = unsafe { required_string(config_json, "config_json") }?;
-        let settings = Settings::parse(&config_json)?;
+        let settings = parse_settings(&config_json, false)?;
         let model = settings.openai_model()?;
         build_agent(
             settings,
@@ -163,7 +163,7 @@ pub unsafe extern "C" fn kestrel_agent_new_with_model(
     let result = ffi_catch(|| {
         // SAFETY: config_json is required by the C contract.
         let config_json = unsafe { required_string(config_json, "config_json") }?;
-        let settings = Settings::parse(&config_json)?;
+        let settings = parse_settings(&config_json, true)?;
         let callback = callback.ok_or_else(|| "model callback must not be NULL".to_owned())?;
         let tracker = Arc::new(CallbackTracker::default());
         let model = settings.callback_model(
@@ -203,7 +203,7 @@ pub unsafe extern "C" fn kestrel_agent_new_with_streaming_model(
     let result = ffi_catch(|| {
         // SAFETY: config_json is required by the C contract.
         let config_json = unsafe { required_string(config_json, "config_json") }?;
-        let settings = Settings::parse(&config_json)?;
+        let settings = parse_settings(&config_json, true)?;
         let callback = callback.ok_or_else(|| "model callback must not be NULL".to_owned())?;
         let tracker = Arc::new(CallbackTracker::default());
         let model = settings.streaming_callback_model(

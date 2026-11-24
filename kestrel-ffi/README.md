@@ -51,6 +51,7 @@ also be freed with `kestrel_string_free`.
 
 ```json
 {
+  "schema_version": 1,
   "system_prompt": "You are a concise assistant.",
   "prompt_sections": ["Prefer short answers."],
   "session_id": "user-42",
@@ -112,6 +113,15 @@ also be freed with `kestrel_string_free`.
 
 `compression.kind` accepts `sliding` or `summarizing`. OpenAI credentials fall
 back to `OPENAI_API_KEY` and `OPENAI_BASE_URL`.
+
+The schema is shared with all SDKs through `kestrel-contract`. The ABI exposes:
+
+- `kestrel_contract_version`
+- `kestrel_capabilities_json`
+- `kestrel_validate_config(config_json, has_custom_model, error)`
+
+`schema_version` defaults to 1. Unknown fields and capabilities not compiled
+into the FFI build are rejected.
 
 `skills.paths` may contain multiple directories; duplicate skill names are
 rejected. Each `mcp_servers` entry uses `url` for Streamable HTTP or `command`

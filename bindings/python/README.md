@@ -53,6 +53,16 @@ Objects follow the same protocols as the Rust traits:
 
 See `example_persistence.py` for an in-memory database example.
 
+Contract helpers mirror the C ABI:
+
+```python
+import kestrel
+
+kestrel.contract_version()          # 1
+kestrel.capabilities()              # capability names
+kestrel.validate_config(config, has_custom_model=True)
+```
+
 Custom Python models can stream tokens by accepting an `emit` function:
 
 ```python

@@ -21,6 +21,7 @@ const { createAgent } = require('./index.js');
 
 const agent = createAgent(
   {
+    schema_version: 1,
     system_prompt: 'Be concise.',
     streaming: true,
     openai: { model: 'gpt-4.1-mini' },
@@ -70,6 +71,10 @@ agent.registerTool(
 ```
 
 TypeScript declarations are in `index.d.ts`.
+
+The addon exports `contractVersion()`, `capabilities()`, and
+`validateConfig(config, hasCustomModel?)`. It shares `kestrel-contract` with the
+Rust and FFI SDKs; unsupported config is rejected before an Agent is created.
 
 ## Current scope
 
