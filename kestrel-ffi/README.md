@@ -279,6 +279,23 @@ session snapshots, todos, reset, cancellation, and `start_run` /
 `next_event_async` / `wait_async`, plus host-backed session and memory objects.
 Custom models can stream through `stream_model=callback(request, emit)`.
 
+## Go reference binding
+
+`bindings/go` calls this C ABI directly with cgo and has no third-party
+dependencies:
+
+```bash
+cargo build -p kestrel-ffi
+cd bindings/go
+go test ./...
+go run ./examples/basic
+```
+
+It includes typed model/tool/event APIs, streaming callbacks, async runs,
+SessionStore/Memory interfaces, and context cancellation. The default cgo link
+path points at `target/debug`; release deployments should adjust
+`bindings/go/callbacks.go` or provide the same library layout.
+
 ## Current limits
 
 - MCP supports stdio and Streamable HTTP, but not sampling, roots, or

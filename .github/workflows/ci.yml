@@ -13,6 +13,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bindings/go/go.mod
       - run: cargo fmt --all -- --check
       - run: bash scripts/check-line-limits.sh
       - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
@@ -29,4 +32,7 @@ jobs:
       - run: PYTHONPATH=bindings/python python3 bindings/python/example_async.py
       - run: PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
       - run: PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
+      - run: test -z "$(gofmt -l bindings/go)"
+      - run: cd bindings/go && go vet ./...
+      - run: cd bindings/go && go test ./...
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps

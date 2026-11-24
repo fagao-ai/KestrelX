@@ -8,7 +8,7 @@ Kestrel 是一个场景无关、库优先的 Rust agent core。它不假设你�
 - 上下文压缩（滑动窗口 / LLM 摘要）
 - 会话持久化与长期记忆
 - 可选 Todo、子 agent、MCP、Skills
-- C ABI 与 Python 参考绑定
+- C ABI 与 Python/Go 参考绑定
 
 目标不是再做一个“什么都能做”的完整应用，而是让开发者用同一套内核构建自己的产品。
 
@@ -384,6 +384,15 @@ PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
 ```
 
+`bindings/go` 是纯 cgo、无第三方 Go 依赖的参考 SDK：
+
+```bash
+cargo build -p kestrel-ffi
+cd bindings/go
+go test ./...
+go run ./examples/basic
+```
+
 其他语言只需要实现 `kestrel.h` 中的函数指针和 JSON 编解码。详细 ABI、内存所有权与
 线程约束见 [`kestrel-ffi/README.md`](kestrel-ffi/README.md)。
 
@@ -391,6 +400,7 @@ PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
 kestrel             # 核心 Rust library
 kestrel-ffi         # C ABI + opaque agent + callback runtime
 bindings/python     # ctypes 参考 SDK
+bindings/go         # cgo 参考 SDK
 ```
 
 ## 当前边界
@@ -422,6 +432,7 @@ PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
+cd bindings/go && go vet ./... && go test ./...
 ```
 
 ## 目录
@@ -449,4 +460,9 @@ bindings/python/
   example_async.py # 非阻塞 run + 事件轮询示例
   example_persistence.py # 宿主 SessionStore + Memory 示例
   example_stream_model.py # 自定义模型 token 流示例
+bindings/go/
+  types.go       # Message、Tool、Memory 等类型
+  agent.go       # Agent/Run API
+  callbacks.go   # cgo bridge 与 callback registry
+  examples/      # 可运行示例
 ```
