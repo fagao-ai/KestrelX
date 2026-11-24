@@ -16,6 +16,7 @@ kestrel-contract = { path = "../kestrel-contract" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [build-dependencies]
 napi-build = "2"

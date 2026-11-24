@@ -130,12 +130,19 @@ export declare function createAgent(
 
 export declare class Agent {
   run(prompt: string): Promise<AgentOutput>;
+  startRun(prompt: string): Run;
   session(): Promise<Record<string, unknown>>;
   todos(): unknown[] | null;
   reset(): Promise<void>;
   setEventHandler(handler?: EventHandler): void;
   registerTool(spec: ToolSpec, handler: ToolHandler): void;
   close(): void;
+}
+
+export declare class Run {
+  cancel(): void;
+  isDone(): boolean;
+  result(): Promise<AgentOutput>;
 }
 
 export declare function kestrelVersion(): string;

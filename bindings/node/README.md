@@ -36,6 +36,23 @@ const output = await agent.run('Hello');
 agent.close();
 ```
 
+For cancellation, start a run without blocking:
+
+```js
+const run = agent.startRun('Do a long task');
+// Later, from any callback or timer:
+run.cancel();
+
+try {
+  const output = await run.result();
+} catch (error) {
+  // Cancelled runs reject with "agent run cancelled".
+}
+```
+
+`startRun()` returns immediately. `run.isDone()` checks native completion and
+`run.result()` can be consumed once.
+
 Custom JavaScript models are async functions returning a serialized
 `ModelResponse` shape:
 
@@ -123,14 +140,14 @@ Rust and FFI SDKs; unsupported config is rejected before an Agent is created.
 - Todo, in-memory memory tools, compression, Skills, and sub-agents via config
 - session/todo/reset snapshots
 - JS-backed SessionStore and Memory
+- cancellable per-run handles via `startRun()`
 
-Not yet exposed by the Node addon: MCP configuration and explicit per-run
-handles. Unsupported config fields and capabilities are rejected instead of
-silently ignored.
+Not yet exposed by the Node addon: MCP configuration. Unsupported config fields
+and capabilities are rejected instead of silently ignored.
 
 ## Threading
 
 Napi ThreadsafeFunctions keep JavaScript callbacks on the JS thread while the
 Rust Tokio runtime executes the agent. Always call `agent.close()` after all
-`run()` promises settle so callback references and native resources are
-released.
+`run()` promises and run handles settle so callback references and native
+resources are released.

@@ -201,3 +201,46 @@ test('JS SessionStore and Memory callbacks', async () => {
   assert.match(history, /second prompt/);
   assert.match(history, /Ada/);
 });
+
+test('startRun returns a cancellable handle', async () => {
+  let notifyStarted;
+  const started = new Promise((resolve) => {
+    notifyStarted = resolve;
+  });
+  const model = async () => {
+    notifyStarted();
+    return new Promise(() => {});
+  };
+  const agent = createAgent(
+    { streaming: true, openai: { model: 'slow-js-model' } },
+    { model }
+  );
+
+  const run = agent.startRun('wait forever');
+  assert.equal(run.isDone(), false);
+  await started;
+  run.cancel();
+  await assert.rejects(run.result(), /cancelled/);
+  assert.equal(run.isDone(), true);
+  agent.close();
+});
+
+test('startRun resolves its output once', async () => {
+  const agent = createAgent(
+    { streaming: false, openai: { model: 'fast-js-model' } },
+    {
+      model: async () => ({
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'finished' }],
+        },
+        finish_reason: 'stop',
+      }),
+    }
+  );
+  const run = agent.startRun('finish');
+  const output = await run.result();
+  assert.equal(output.text, 'finished');
+  await assert.rejects(run.result(), /already been consumed/);
+  agent.close();
+});

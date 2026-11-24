@@ -429,7 +429,7 @@ bindings/node       # napi-rs 原生 addon
   C 调用，语言 SDK 应放到 worker 或 executor。
 - FFI 的 tool callback 是同步回调；取消无法中断已经进入宿主 callback 的调用，但 run 会等
   在途 callback 返回后才报告取消，确保 `user_data` 生命周期安全。
-- Node addon 目前未暴露 MCP 配置和显式 run handle。
+- Node addon 目前未暴露 MCP 配置；显式 run handle 可通过 `startRun()` 获取。
 - 会话压缩会更新持久化历史；如需保留完整审计日志，应在 SessionStore 外单独存 event/audit。
 - 摘要压缩的额外模型调用，以及子 agent 的 token 用量，不计入父级 `AgentOutput.usage`。
 

@@ -12,7 +12,7 @@ use kestrel::skills::SkillRegistry;
 use kestrel::{
     Agent as CoreAgent, AgentEvent, ContextCompressor, EventSink, InMemoryMemory, Memory,
     MemoryEntry, MemoryQuery, Model, ModelDelta, ModelRequest, ModelResponse, OpenAiCompatible,
-    Result as CoreResult, Session, SessionStore, SlidingWindowCompressor, SubAgentTool,
+    Result as CoreResult, RunOptions, Session, SessionStore, SlidingWindowCompressor, SubAgentTool,
     SummarizingCompressor, TodoList, Tool, ToolContext, ToolOutput, ToolSpec,
 };
 use kestrel_contract::{
@@ -26,6 +26,7 @@ use napi::{
 };
 use napi_derive::napi;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 type ModelFn = ThreadsafeFunction<
     FnArgs<(Value, String)>,
@@ -470,6 +471,63 @@ pub struct Agent {
     todos: Option<TodoList>,
 }
 
+struct RunState {
+    cancellation: CancellationToken,
+    task: StdMutex<Option<tokio::task::JoinHandle<()>>>,
+    result: StdMutex<Option<tokio::sync::oneshot::Receiver<std::result::Result<Value, String>>>>,
+}
+
+/// A cancellable handle for one asynchronous run.
+#[napi]
+pub struct Run {
+    state: Arc<RunState>,
+}
+
+#[napi]
+impl Run {
+    /// Requests cancellation of this run.
+    #[napi]
+    pub fn cancel(&self) {
+        self.state.cancellation.cancel();
+    }
+
+    /// Returns whether the native task has finished.
+    #[napi]
+    pub fn is_done(&self) -> bool {
+        self.state
+            .task
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_none_or(tokio::task::JoinHandle::is_finished)
+    }
+
+    /// Waits for the final output. Can be called once.
+    #[napi]
+    pub async fn result(&self) -> Result<Value> {
+        let receiver = self
+            .state
+            .result
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .ok_or_else(|| node_error("run result has already been consumed"))?;
+        match receiver.await {
+            Ok(Ok(output)) => Ok(output),
+            Ok(Err(error)) => Err(node_error(error)),
+            Err(error) => Err(node_error(format!(
+                "run task ended without output: {error}"
+            ))),
+        }
+    }
+}
+
+impl Drop for Run {
+    fn drop(&mut self) {
+        self.state.cancellation.cancel();
+    }
+}
+
 /// Creates a Kestrel agent.
 #[napi]
 #[allow(clippy::too_many_arguments)]
@@ -537,6 +595,30 @@ impl Agent {
         let inner = self.core()?.clone();
         let output = inner.run(prompt).await.map_err(node_error)?;
         serde_json::to_value(output).map_err(node_error)
+    }
+
+    /// Starts a run and immediately returns a cancellable handle.
+    #[napi]
+    pub fn start_run(&self, prompt: String) -> Result<Run> {
+        let inner = self.core()?.clone();
+        let cancellation = CancellationToken::new();
+        let run_token = cancellation.clone();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let task = napi::bindgen_prelude::spawn(async move {
+            let output = inner
+                .run_with(prompt, RunOptions::default().with_cancellation(run_token))
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|output| serde_json::to_value(output).map_err(|error| error.to_string()));
+            let _ = sender.send(output);
+        });
+        Ok(Run {
+            state: Arc::new(RunState {
+                cancellation,
+                task: StdMutex::new(Some(task)),
+                result: StdMutex::new(Some(receiver)),
+            }),
+        })
     }
 
     /// Returns a session snapshot.
