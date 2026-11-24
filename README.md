@@ -238,7 +238,7 @@ OpenAI 流式 usage 默认为开启；兼容服务不支持 `stream_options` 时
 | Feature | 默认 | 内容 |
 |---|---:|---|
 | `openai` | 是 | OpenAI-compatible Chat Completions provider |
-| `todo` | 是 | `TodoList`、`todo_write`、`todo_read` |
+| `todo` | 否 | `TodoList`、`todo_write`、`todo_read` |
 | `subagent` | 是 | `SubAgentTool`，每次调用使用隔离会话 |
 | `mcp` | 否 | stdio / Streamable HTTP MCP client |
 | `skills` | 否 | `SKILL.md` 发现、catalog prompt、`read_skill` |
@@ -252,7 +252,11 @@ kestrel = { path = ".", default-features = false }
 
 ### Todo：显式开启
 
-Todo 编译进 crate 不等于运行时启用。只有注册工具才会真正暴露给模型：
+先启用 Cargo feature，再在运行时安装工具。两步都需要：
+
+```toml
+kestrel = { path = ".", features = ["todo"] }
+```
 
 ```rust
 let todos = TodoList::new();

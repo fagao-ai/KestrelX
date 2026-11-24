@@ -22,8 +22,8 @@
 //! # }
 //! ```
 //!
-//! Optional integrations are feature-gated: `openai` (default), `todo`
-//! (default), `subagent` (default), `mcp`, and `skills`.
+//! Optional integrations are feature-gated: `openai` (default), `subagent`
+//! (default), `mcp`, `skills`, and `todo`.
 //!
 //! Streaming providers can override [`Model::complete_stream`]. The agent
 //! forwards text and tool-call fragments through

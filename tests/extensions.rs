@@ -2,7 +2,9 @@ mod support;
 
 use std::sync::Arc;
 
-use kestrel::{Agent, SubAgentTool, TodoList};
+#[cfg(feature = "todo")]
+use kestrel::TodoList;
+use kestrel::{Agent, SubAgentTool};
 use serde_json::json;
 use support::{ScriptedModel, call, text_response, tool_response};
 
@@ -51,6 +53,7 @@ async fn subagent_runs_with_isolated_conversation() {
 }
 
 #[tokio::test]
+#[cfg(feature = "todo")]
 async fn todo_is_opt_in_but_fully_usable_when_installed() {
     let todos = TodoList::new();
     let model = Arc::new(ScriptedModel::new([

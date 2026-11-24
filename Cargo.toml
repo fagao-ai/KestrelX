@@ -19,13 +19,17 @@ tokio-util = { version = "0.7", features = ["rt"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 
 [features]
-default = ["openai", "subagent", "todo"]
+default = ["openai", "subagent"]
 full = ["mcp", "openai", "skills", "subagent", "todo"]
 mcp = ["dep:reqwest", "tokio/io-util", "tokio/process"]
 openai = ["dep:reqwest"]
 skills = []
 subagent = []
 todo = []
+
+[[example]]
+name = "support_agent"
+required-features = ["openai", "todo"]
 
 [dev-dependencies]
 tempfile = "3"
