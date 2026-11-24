@@ -195,6 +195,9 @@ test('JS SessionStore and Memory callbacks', async () => {
 
   const second = createAgent(config, { model, sessionStore, memory });
   assert.equal((await second.run('second prompt')).text, 'second answer');
+  await second.deleteSession();
+  assert.equal(sessions.has('node-persisted-session'), false);
+  assert.equal((await second.session()).messages.length, 0);
   second.close();
 
   const history = JSON.stringify(requests.at(-1));

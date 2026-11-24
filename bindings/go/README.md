@@ -23,6 +23,7 @@ paths in `callbacks.go`, or provide an equivalent deployment layout.
 - blocking `Run(ctx)` and nonblocking `StartRun` / `Run.Wait`
 - cancellation through `context.Context`
 - SessionStore and long-term Memory callbacks
+- session reset and deletion
 - MCP, Skills, Todo, sub-agent, memory, and compression through config JSON
 
 ## Example

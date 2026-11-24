@@ -156,6 +156,7 @@ export declare class Agent {
   session(): Promise<Record<string, unknown>>;
   todos(): unknown[] | null;
   reset(): Promise<void>;
+  deleteSession(): Promise<void>;
   setEventHandler(handler?: EventHandler): void;
   registerTool(spec: ToolSpec, handler: ToolHandler): void;
   connectMcp(servers: McpServerConfig[]): Promise<void>;

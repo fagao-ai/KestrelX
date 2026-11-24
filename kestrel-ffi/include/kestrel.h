@@ -252,6 +252,9 @@ char *kestrel_agent_todos_json(KestrelAgent *agent, char **error);
 
 int32_t kestrel_agent_reset(KestrelAgent *agent, char **error);
 
+/* Deletes the stored session and clears local history. */
+int32_t kestrel_agent_delete_session(KestrelAgent *agent, char **error);
+
 #ifdef __cplusplus
 }
 #endif

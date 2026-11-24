@@ -248,6 +248,11 @@ def load_library(path: Optional[str] = None) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_void_p),
     ]
     library.kestrel_agent_reset.restype = ctypes.c_int32
+    library.kestrel_agent_delete_session.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_delete_session.restype = ctypes.c_int32
     return library
 
 
@@ -496,6 +501,16 @@ class Agent:
         """Clears conversation history while keeping the session ID."""
         error = ctypes.c_void_p()
         status = self._lib.kestrel_agent_reset(
+            self._handle,
+            ctypes.byref(error),
+        )
+        if status != 0:
+            raise KestrelError(self._take_error(error))
+
+    def delete_session(self) -> None:
+        """Deletes the stored session and clears local history."""
+        error = ctypes.c_void_p()
+        status = self._lib.kestrel_agent_delete_session(
             self._handle,
             ctypes.byref(error),
         )

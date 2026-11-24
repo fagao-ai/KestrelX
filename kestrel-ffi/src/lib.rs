@@ -20,8 +20,8 @@ mod strings;
 mod tools;
 
 pub use agent::{
-    KestrelAgent, kestrel_agent_cancel, kestrel_agent_free, kestrel_agent_new,
-    kestrel_agent_new_with_model, kestrel_agent_new_with_streaming_model,
+    KestrelAgent, kestrel_agent_cancel, kestrel_agent_delete_session, kestrel_agent_free,
+    kestrel_agent_new, kestrel_agent_new_with_model, kestrel_agent_new_with_streaming_model,
     kestrel_agent_register_tool, kestrel_agent_reset, kestrel_agent_run, kestrel_agent_run_message,
     kestrel_agent_session_json, kestrel_agent_set_event_callback, kestrel_agent_todos_json,
 };

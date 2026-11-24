@@ -156,6 +156,9 @@ const agent = createAgent(config, {
 Payloads cross the native boundary as JSON strings internally so 64-bit
 timestamps remain lossless.
 
+`agent.deleteSession()` invokes the store's `delete` callback and clears local
+history while keeping the session ID.
+
 The addon exports `contractVersion()`, `capabilities()`, and
 `validateConfig(config, hasCustomModel?)`. It shares `kestrel-contract` with the
 Rust and FFI SDKs; unsupported config is rejected before an Agent is created.

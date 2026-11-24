@@ -42,6 +42,7 @@ Main functions:
 | `kestrel_agent_session_json` | conversation snapshot |
 | `kestrel_agent_todos_json` | todo snapshot when enabled |
 | `kestrel_agent_reset` | clear history while retaining session ID |
+| `kestrel_agent_delete_session` | delete the stored session and clear history |
 
 All JSON-returning functions return a newly allocated C string on success. Free
 it with `kestrel_string_free`. Errors use a `char **error` out-parameter and must

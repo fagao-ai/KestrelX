@@ -3,8 +3,8 @@ mod support;
 use std::{sync::Arc, time::Duration};
 
 use kestrel::{
-    Agent, AgentEventKind, Error, InMemorySessionStore, RunOptions, ToolOutput, ToolSpec,
-    event_channel, function_tool,
+    Agent, AgentEventKind, Error, InMemorySessionStore, RunOptions, SessionStore, ToolOutput,
+    ToolSpec, event_channel, function_tool,
 };
 use serde_json::json;
 use support::{
@@ -297,4 +297,37 @@ async fn persists_and_reloads_sessions() {
     assert!(texts.contains(&"remember this".to_owned()));
     assert!(texts.contains(&"first".to_owned()));
     assert!(texts.contains(&"what next".to_owned()));
+}
+
+#[tokio::test]
+async fn deletes_persisted_sessions_without_stale_reload() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let first_model = Arc::new(ScriptedModel::new([text_response("before delete")]));
+    let agent = Agent::builder(first_model)
+        .session_store(store.clone())
+        .session_id("session-delete")
+        .build()
+        .unwrap();
+    agent.run("remember this").await.unwrap();
+    assert!(store.require("session-delete").await.is_ok());
+
+    agent.delete_session().await.unwrap();
+    assert!(store.load("session-delete").await.unwrap().is_none());
+    assert!(agent.messages().await.is_empty());
+
+    let second_model = Arc::new(ScriptedModel::new([text_response("after delete")]));
+    let second = Agent::builder(second_model.clone())
+        .session_store(store)
+        .session_id("session-delete")
+        .build()
+        .unwrap();
+    second.run("fresh start").await.unwrap();
+    let texts = second_model.requests()[0]
+        .messages
+        .iter()
+        .map(kestrel::Message::text)
+        .collect::<Vec<_>>();
+    assert!(texts.contains(&"fresh start".to_owned()));
+    assert!(!texts.contains(&"remember this".to_owned()));
+    assert!(!texts.contains(&"before delete".to_owned()));
 }

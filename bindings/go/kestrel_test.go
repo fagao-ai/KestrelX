@@ -313,6 +313,14 @@ func TestGoSessionStoreAndMemory(t *testing.T) {
 	if secondOutput.Text != "second answer" {
 		t.Fatalf("unexpected second output: %q", secondOutput.Text)
 	}
+	if err := second.DeleteSession(); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	if len(store.sessions) != 0 {
+		t.Fatalf("session store was not cleared: %#v", store.sessions)
+	}
+	store.mu.Unlock()
 
 	mu.Lock()
 	defer mu.Unlock()

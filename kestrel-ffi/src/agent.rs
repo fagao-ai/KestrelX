@@ -511,3 +511,32 @@ pub unsafe extern "C" fn kestrel_agent_reset(
         }
     }
 }
+
+/// Deletes the persisted session and clears local history.
+///
+/// # Safety
+///
+/// Pointers follow the C contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kestrel_agent_delete_session(
+    agent: *mut KestrelAgent,
+    error: *mut *mut c_char,
+) -> c_int {
+    // SAFETY: out_error follows the C contract.
+    unsafe { clear_error(error) };
+    let result = ffi_catch(|| {
+        // SAFETY: arguments follow the C contract.
+        let agent = unsafe { agent_ref(agent) }?;
+        let _guard = agent.begin_run(CancellationToken::new())?;
+        block_on(agent.inner.delete_session())?.map_err(|error| error.to_string())
+    });
+
+    match result {
+        Ok(()) => 0,
+        Err(error_message) => {
+            // SAFETY: out_error follows the C contract.
+            unsafe { set_error(error, error_message) };
+            -1
+        }
+    }
+}

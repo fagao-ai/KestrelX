@@ -716,6 +716,16 @@ impl Agent {
         self.core()?.clone().reset().await.map_err(node_error)
     }
 
+    /// Deletes the stored session and clears local history.
+    #[napi]
+    pub async fn delete_session(&self) -> Result<()> {
+        self.core()?
+            .clone()
+            .delete_session()
+            .await
+            .map_err(node_error)
+    }
+
     /// Replaces the event handler.
     #[napi]
     pub fn set_event_handler(

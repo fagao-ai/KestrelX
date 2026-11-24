@@ -88,6 +88,23 @@ impl Agent {
         self.persist_session().await
     }
 
+    /// Deletes the persisted session and clears local history.
+    ///
+    /// The session ID is retained so subsequent runs start a fresh conversation
+    /// with the same identity.
+    pub async fn delete_session(&self) -> Result<()> {
+        let _run_guard = self.state.run_lock.lock().await;
+        let id = self.state.session.read().await.id.clone();
+        if let Some(store) = &self.state.session_store {
+            store.delete(&id).await?;
+        }
+        *self.state.session.write().await = crate::Session::with_id(id);
+        self.state
+            .loaded
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
     async fn execute_run(
         &self,
         input: Message,

@@ -13,13 +13,13 @@ use kestrel::{AgentOutput, FinishReason, Message, ModelResponse, ToolCall, Usage
 use kestrel_ffi::{
     DeltaEmitterFn, KestrelAgent, kestrel_agent_builder_build, kestrel_agent_builder_free,
     kestrel_agent_builder_new_with_model, kestrel_agent_builder_set_memory,
-    kestrel_agent_builder_set_session_store, kestrel_agent_cancel, kestrel_agent_free,
-    kestrel_agent_new, kestrel_agent_new_with_model, kestrel_agent_new_with_streaming_model,
-    kestrel_agent_register_tool, kestrel_agent_reset, kestrel_agent_run,
-    kestrel_agent_session_json, kestrel_agent_set_event_callback, kestrel_agent_start_run,
-    kestrel_agent_todos_json, kestrel_capabilities_json, kestrel_contract_version,
-    kestrel_run_free, kestrel_run_is_done, kestrel_run_next_event, kestrel_run_wait,
-    kestrel_string_free, kestrel_string_new, kestrel_validate_config,
+    kestrel_agent_builder_set_session_store, kestrel_agent_cancel, kestrel_agent_delete_session,
+    kestrel_agent_free, kestrel_agent_new, kestrel_agent_new_with_model,
+    kestrel_agent_new_with_streaming_model, kestrel_agent_register_tool, kestrel_agent_reset,
+    kestrel_agent_run, kestrel_agent_session_json, kestrel_agent_set_event_callback,
+    kestrel_agent_start_run, kestrel_agent_todos_json, kestrel_capabilities_json,
+    kestrel_contract_version, kestrel_run_free, kestrel_run_is_done, kestrel_run_next_event,
+    kestrel_run_wait, kestrel_string_free, kestrel_string_new, kestrel_validate_config,
 };
 use serde_json::{Value, json};
 
@@ -1083,6 +1083,23 @@ fn builder_persists_sessions_and_long_term_memory() {
     assert!(text.contains("second prompt"));
     assert!(text.contains("Shanghai"));
     assert_eq!(persistence.memory.lock().unwrap().len(), 1);
+    // SAFETY: no run is active.
+    assert_eq!(
+        unsafe { kestrel_agent_delete_session(second_agent, &mut error) },
+        0,
+        "{}",
+        error_message(error)
+    );
+    assert!(persistence.sessions.lock().unwrap().is_empty());
+    // SAFETY: agent and error pointer are valid.
+    let session_ptr = unsafe { kestrel_agent_session_json(second_agent, &mut error) };
+    assert!(!session_ptr.is_null(), "{}", error_message(error));
+    // SAFETY: Kestrel owns the allocated session string until freed.
+    let session: Value =
+        serde_json::from_str(unsafe { CStr::from_ptr(session_ptr) }.to_str().unwrap()).unwrap();
+    assert!(session["messages"].as_array().unwrap().is_empty());
+    // SAFETY: session_ptr is released exactly once.
+    unsafe { kestrel_string_free(session_ptr) };
     // SAFETY: no run is active.
     unsafe { kestrel_agent_free(second_agent) };
 }

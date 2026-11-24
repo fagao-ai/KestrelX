@@ -51,6 +51,9 @@ Objects follow the same protocols as the Rust traits:
 - session store: `load(id) -> dict | None`, `save(session)`, optional `delete(id)`
 - memory: `recall(query) -> list[dict]`, `remember(entry)`
 
+Use `agent.reset()` to clear history while preserving the session ID, or
+`agent.delete_session()` to remove the stored session as well.
+
 See `example_persistence.py` for an in-memory database example.
 
 Contract helpers mirror the C ABI:

@@ -178,6 +178,9 @@ let agent = Agent::builder(model)
 接入数据库时实现 `SessionStore` / `Memory` 即可。内置 `InMemoryMemory` 仅用于开发
 和测试，不包含 embedding。
 
+`agent.reset()` 清空当前历史但保留 session ID；`agent.delete_session()` 会同时删除
+持久化记录并清空本地历史，下一次 run 使用相同 ID 从空会话开始。
+
 ### 事件
 
 ```rust

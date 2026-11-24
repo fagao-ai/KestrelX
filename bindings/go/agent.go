@@ -385,6 +385,20 @@ func (a *Agent) Reset() error {
 	return nil
 }
 
+// DeleteSession deletes the stored session and clears local history.
+func (a *Agent) DeleteSession() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return errors.New("agent is closed")
+	}
+	var errorC *C.char
+	if status := C.kestrel_agent_delete_session(a.ptr, &errorC); status != 0 {
+		return takeCError(errorC)
+	}
+	return nil
+}
+
 // Close waits for active runs and releases native resources.
 func (a *Agent) Close() {
 	a.mu.Lock()

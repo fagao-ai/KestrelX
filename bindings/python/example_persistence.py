@@ -82,6 +82,8 @@ def main() -> None:
         memory=memory,
     ) as agent:
         print(agent.run("second prompt")["text"])
+        agent.delete_session()
+        assert "python-persisted-session" not in sessions.sessions
 
     history = str(requests[-1])
     assert "first prompt" in history
