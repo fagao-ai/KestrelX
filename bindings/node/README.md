@@ -104,6 +104,36 @@ agent.registerTool(
 
 TypeScript declarations are in `index.d.ts`.
 
+## MCP
+
+`createAgent()` is synchronous and rejects `mcp_servers`. Use
+`createAgentAsync()` when configuration contains MCP servers:
+
+```js
+const { createAgentAsync } = require('./index.js');
+
+const agent = await createAgentAsync(
+  {
+    streaming: true,
+    mcp_servers: [
+      { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '.'] },
+      { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ...' } },
+    ],
+    openai: { model: 'gpt-4.1-mini' },
+  },
+  { onEvent: (event) => console.log(event) }
+);
+
+// Graceful MCP cleanup before releasing the agent:
+await agent.closeMcp();
+agent.close();
+```
+
+With a custom JavaScript model, pass it in the options object as usual. MCP
+stdio and Streamable HTTP servers are both supported. `agent.connectMcp()`
+and `agent.closeMcp()` are also available for adding or removing MCP tools at
+runtime.
+
 ## Host persistence
 
 The options object can provide JS-backed session and long-term memory stores:
@@ -141,13 +171,15 @@ Rust and FFI SDKs; unsupported config is rejected before an Agent is created.
 - session/todo/reset snapshots
 - JS-backed SessionStore and Memory
 - cancellable per-run handles via `startRun()`
+- stdio and Streamable HTTP MCP servers via `createAgentAsync()`
 
-Not yet exposed by the Node addon: MCP configuration. Unsupported config fields
-and capabilities are rejected instead of silently ignored.
+Unsupported config fields and capabilities are rejected instead of silently
+ignored.
 
 ## Threading
 
 Napi ThreadsafeFunctions keep JavaScript callbacks on the JS thread while the
 Rust Tokio runtime executes the agent. Always call `agent.close()` after all
 `run()` promises and run handles settle so callback references and native
-resources are released.
+resources are released. For MCP agents, prefer `await agent.closeMcp()` before
+`agent.close()` so sessions and child processes shut down gracefully.

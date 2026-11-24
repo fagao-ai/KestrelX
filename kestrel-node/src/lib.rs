@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{
         Arc, Mutex as StdMutex, OnceLock, RwLock,
         atomic::{AtomicU64, Ordering},
@@ -8,6 +9,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use kestrel::mcp::{McpClient, McpHttpClient, McpHttpConfig, McpServerConfig};
 use kestrel::skills::SkillRegistry;
 use kestrel::{
     Agent as CoreAgent, AgentEvent, ContextCompressor, EventSink, InMemoryMemory, Memory,
@@ -16,8 +18,8 @@ use kestrel::{
     SummarizingCompressor, TodoList, Tool, ToolContext, ToolOutput, ToolSpec,
 };
 use kestrel_contract::{
-    AgentConfig as WireConfig, Capability, CapabilitySet, CompressionKind, OpenAiSettings,
-    SCHEMA_VERSION,
+    AgentConfig as WireConfig, Capability, CapabilitySet, CompressionKind, McpServerSettings,
+    OpenAiSettings, SCHEMA_VERSION,
 };
 use napi::{
     Error, Result, Status,
@@ -73,6 +75,8 @@ fn node_capabilities() -> CapabilitySet {
         Capability::CompressionSummarizing,
         Capability::Subagent,
         Capability::Skills,
+        Capability::McpStdio,
+        Capability::McpHttp,
         Capability::HostTools,
         Capability::SessionStore,
         Capability::MemoryStore,
@@ -469,6 +473,25 @@ pub struct Agent {
     inner: Option<CoreAgent>,
     events: EventSlot,
     todos: Option<TodoList>,
+    mcp_clients: StdMutex<Vec<NodeMcpClient>>,
+}
+
+enum NodeMcpClient {
+    Stdio(McpClient),
+    Http(McpHttpClient),
+}
+
+impl NodeMcpClient {
+    async fn close(&self) {
+        match self {
+            Self::Stdio(client) => {
+                let _ = client.close().await;
+            }
+            Self::Http(client) => {
+                let _ = client.close().await;
+            }
+        }
+    }
 }
 
 struct RunState {
@@ -541,6 +564,48 @@ pub fn create_agent(
     memory_recall: Option<StringPromiseFunction>,
     memory_remember: Option<StringPromiseFunction>,
 ) -> Result<Agent> {
+    let inputs = prepare_agent_inputs(
+        config,
+        model,
+        event_handler,
+        session_load,
+        session_save,
+        session_delete,
+        memory_recall,
+        memory_remember,
+    )?;
+    if !inputs.config.mcp_servers.is_empty() {
+        return Err(node_error("MCP configuration requires createAgentAsync()"));
+    }
+    build_agent(
+        inputs.config,
+        inputs.model,
+        inputs.events,
+        inputs.session_store,
+        inputs.memory,
+    )
+    .map_err(node_error)
+}
+
+struct AgentInputs {
+    config: WireConfig,
+    model: Option<Arc<ModelFn>>,
+    events: EventSlot,
+    session_store: Option<Arc<dyn SessionStore>>,
+    memory: Option<Arc<dyn Memory>>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_agent_inputs(
+    config: Value,
+    model: Option<ModelFunction>,
+    event_handler: Option<EventFunction>,
+    session_load: Option<StringPromiseFunction>,
+    session_save: Option<StringPromiseFunction>,
+    session_delete: Option<StringPromiseFunction>,
+    memory_recall: Option<StringPromiseFunction>,
+    memory_remember: Option<StringPromiseFunction>,
+) -> Result<AgentInputs> {
     let mut config = WireConfig::parse_value(config).map_err(node_error)?;
     if memory_recall.is_some() || memory_remember.is_some() {
         config.memory.enabled = true;
@@ -578,7 +643,13 @@ pub fn create_agent(
             ));
         }
     };
-    build_agent(config, model, events, session_store, memory).map_err(node_error)
+    Ok(AgentInputs {
+        config,
+        model,
+        events,
+        session_store,
+        memory,
+    })
 }
 
 #[napi]
@@ -667,9 +738,60 @@ impl Agent {
             .map_err(node_error)
     }
 
+    /// Connects MCP servers and registers their tools.
+    #[napi]
+    pub async fn connect_mcp(&self, servers: Value) -> Result<()> {
+        let servers: Vec<McpServerSettings> =
+            serde_json::from_value(servers).map_err(node_error)?;
+        let (clients, tools) = connect_mcp_servers(&servers).await.map_err(node_error)?;
+        if let Err(error) = self.core()?.tools().register_all(tools) {
+            for client in &clients {
+                client.close().await;
+            }
+            return Err(node_error(error));
+        }
+        self.mcp_clients
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .extend(clients);
+        Ok(())
+    }
+
+    /// Closes MCP connections while keeping the agent usable.
+    #[napi]
+    pub async fn close_mcp(&self) -> Result<()> {
+        let clients = std::mem::take(
+            &mut *self
+                .mcp_clients
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        for client in clients {
+            client.close().await;
+        }
+        Ok(())
+    }
+
     /// Releases native resources. All runs must be awaited first.
     #[napi]
     pub fn close(&mut self) {
+        self.release();
+        let clients = std::mem::take(
+            &mut *self
+                .mcp_clients
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        if !clients.is_empty() {
+            napi::bindgen_prelude::spawn(async move {
+                for client in clients {
+                    client.close().await;
+                }
+            });
+        }
+    }
+
+    fn release(&mut self) {
         self.inner = None;
         self.todos = None;
         self.events.set(None).ok();
@@ -774,7 +896,77 @@ fn build_agent(
         inner: Some(inner),
         events,
         todos,
+        mcp_clients: StdMutex::new(Vec::new()),
     })
+}
+
+async fn connect_mcp_servers(
+    servers: &[McpServerSettings],
+) -> CoreResult<(Vec<NodeMcpClient>, Vec<Arc<dyn Tool>>)> {
+    let mut clients = Vec::new();
+    let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+    for server in servers {
+        match connect_mcp_server(server).await {
+            Ok((client, discovered)) => {
+                clients.push(client);
+                tools.extend(discovered);
+            }
+            Err(error) => {
+                for client in &clients {
+                    client.close().await;
+                }
+                return Err(error);
+            }
+        }
+    }
+    Ok((clients, tools))
+}
+
+async fn connect_mcp_server(
+    server: &McpServerSettings,
+) -> CoreResult<(NodeMcpClient, Vec<Arc<dyn Tool>>)> {
+    if let Some(url) = &server.url {
+        let mut config = McpHttpConfig::new(url.clone());
+        config.headers = server.headers.clone();
+        if let Some(seconds) = server.request_timeout_seconds {
+            config = config.request_timeout(Duration::from_secs(seconds));
+        }
+        if let Some(version) = &server.protocol_version {
+            config = config.protocol_version(version.clone());
+        }
+        if let Some(name) = &server.client_name {
+            config.client_name = name.clone();
+        }
+        if let Some(version) = &server.client_version {
+            config.client_version = version.clone();
+        }
+        let client = McpHttpClient::connect(config).await?;
+        let tools = client.tools().await?;
+        Ok((NodeMcpClient::Http(client), tools))
+    } else {
+        let mut config = McpServerConfig::new(server.command.clone()).args(server.args.clone());
+        for (key, value) in &server.env {
+            config = config.env(key, value);
+        }
+        if let Some(cwd) = &server.cwd {
+            config = config.cwd(PathBuf::from(cwd));
+        }
+        if let Some(seconds) = server.request_timeout_seconds {
+            config = config.request_timeout(Duration::from_secs(seconds));
+        }
+        if let Some(version) = &server.protocol_version {
+            config = config.protocol_version(version.clone());
+        }
+        if let Some(name) = &server.client_name {
+            config.client_name = name.clone();
+        }
+        if let Some(version) = &server.client_version {
+            config.client_version = version.clone();
+        }
+        let client = McpClient::connect(config).await?;
+        let tools = client.tools().await?;
+        Ok((NodeMcpClient::Stdio(client), tools))
+    }
 }
 
 fn build_openai(settings: &OpenAiSettings) -> CoreResult<OpenAiCompatible> {

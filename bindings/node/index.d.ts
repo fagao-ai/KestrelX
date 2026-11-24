@@ -111,6 +111,19 @@ export interface AgentOptions {
   memory?: Memory;
 }
 
+export interface McpServerConfig {
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  cwd?: string;
+  request_timeout_seconds?: number;
+  protocol_version?: string;
+  client_name?: string;
+  client_version?: string;
+}
+
 export declare function contractVersion(): number;
 export declare function capabilities(): string[];
 export declare function validateConfig(
@@ -127,6 +140,15 @@ export declare function createAgent(
   config: Record<string, unknown>,
   options?: AgentOptions
 ): Agent;
+export declare function createAgentAsync(
+  config: Record<string, unknown>,
+  model?: ModelHandler,
+  eventHandler?: EventHandler
+): Promise<Agent>;
+export declare function createAgentAsync(
+  config: Record<string, unknown>,
+  options?: AgentOptions
+): Promise<Agent>;
 
 export declare class Agent {
   run(prompt: string): Promise<AgentOutput>;
@@ -136,6 +158,8 @@ export declare class Agent {
   reset(): Promise<void>;
   setEventHandler(handler?: EventHandler): void;
   registerTool(spec: ToolSpec, handler: ToolHandler): void;
+  connectMcp(servers: McpServerConfig[]): Promise<void>;
+  closeMcp(): Promise<void>;
   close(): void;
 }
 

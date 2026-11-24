@@ -39,7 +39,7 @@ function extractText(message) {
     .join('\n');
 }
 
-function createAgent(config, modelOrOptions, eventHandler) {
+function normalizeOptions(modelOrOptions, eventHandler) {
   let options = {};
   if (typeof modelOrOptions === 'function' || modelOrOptions == null) {
     options.model = modelOrOptions;
@@ -50,7 +50,10 @@ function createAgent(config, modelOrOptions, eventHandler) {
   if (options.model && options.streamModel) {
     throw new Error('model and streamModel are mutually exclusive');
   }
+  return options;
+}
 
+function nativeAgentArguments(config, options) {
   let model;
   if (options.streamModel) {
     model = async (request, token) =>
@@ -100,7 +103,7 @@ function createAgent(config, modelOrOptions, eventHandler) {
       }
     : undefined;
 
-  return native.createAgent(
+  return [
     config,
     model,
     options.onEvent ?? options.eventHandler,
@@ -108,11 +111,45 @@ function createAgent(config, modelOrOptions, eventHandler) {
     save,
     remove,
     recall,
-    remember
-  );
+    remember,
+  ];
+}
+
+function createAgent(config, modelOrOptions, eventHandler) {
+  const options = normalizeOptions(modelOrOptions, eventHandler);
+  return native.createAgent(...nativeAgentArguments(config, options));
+}
+
+async function createAgentAsync(config, modelOrOptions, eventHandler) {
+  const options = normalizeOptions(modelOrOptions, eventHandler);
+  const args = nativeAgentArguments(config, options);
+  const servers = config?.mcp_servers;
+  if (!Array.isArray(servers) || servers.length === 0) {
+    return native.createAgent(...args);
+  }
+
+  const validationConfig = options.memory
+    ? {
+        ...config,
+        memory: { ...(config.memory ?? {}), enabled: true },
+      }
+    : config;
+  native.validateConfig(validationConfig, Boolean(args[1]));
+
+  const { mcp_servers: _servers, ...baseConfig } = config;
+  const agent = native.createAgent(baseConfig, ...args.slice(1));
+  try {
+    await agent.connectMcp(servers);
+    return agent;
+  } catch (error) {
+    await agent.closeMcp().catch(() => {});
+    agent.close();
+    throw error;
+  }
 }
 
 module.exports = {
   ...native,
   createAgent,
+  createAgentAsync,
 };

@@ -320,8 +320,9 @@ node example.js
 
 It supports async JavaScript models and tools, event callbacks, OpenAI config,
 Todo, in-memory memory tools, compression, Skills, sub-agents, and TypeScript
-declarations. JS-backed SessionStore/Memory and custom-model token streaming are
-also available. MCP config and explicit per-run handles are not yet exposed.
+declarations. JS-backed SessionStore/Memory, custom-model token streaming,
+cancellable run handles, and stdio/HTTP MCP through `createAgentAsync()` are
+also available.
 
 ## Current limits
 

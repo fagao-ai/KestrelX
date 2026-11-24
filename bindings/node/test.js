@@ -9,6 +9,7 @@ const {
   capabilities,
   contractVersion,
   createAgent,
+  createAgentAsync,
   validateConfig,
 } = require('./index.js');
 
@@ -17,10 +18,11 @@ test('contract version and capabilities', () => {
   assert.ok(capabilities().includes('streaming'));
   assert.ok(capabilities().includes('session_store'));
   assert.ok(capabilities().includes('memory_store'));
-  assert.ok(!capabilities().includes('mcp_http'));
+  assert.ok(capabilities().includes('mcp_http'));
+  assert.ok(capabilities().includes('mcp_stdio'));
 });
 
-test('rejects unsupported MCP config', () => {
+test('sync createAgent directs MCP config to createAgentAsync', () => {
   assert.throws(
     () =>
       createAgent({
@@ -28,7 +30,7 @@ test('rejects unsupported MCP config', () => {
         openai: { model: 'unused' },
         mcp_servers: [{ url: 'https://example.com/mcp' }],
       }),
-    /mcp_http/
+    /createAgentAsync/
   );
 });
 
@@ -243,4 +245,208 @@ test('startRun resolves its output once', async () => {
   assert.equal(output.text, 'finished');
   await assert.rejects(run.result(), /already been consumed/);
   agent.close();
+});
+
+test('createAgentAsync connects an HTTP MCP server', async () => {
+  const http = require('node:http');
+  const server = http.createServer(async (request, response) => {
+    if (request.method === 'DELETE') {
+      response.writeHead(204).end();
+      return;
+    }
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    const message = JSON.parse(body);
+    if (message.id === undefined) {
+      response.writeHead(202).end();
+      return;
+    }
+
+    let result;
+    if (message.method === 'initialize') {
+      result = {
+        protocolVersion: '2025-06-18',
+        capabilities: { tools: {} },
+        serverInfo: { name: 'node-test', version: '1.0.0' },
+      };
+    } else if (message.method === 'tools/list') {
+      result = {
+        tools: [
+          {
+            name: 'remote.echo',
+            description: 'Echo through MCP',
+            inputSchema: {
+              type: 'object',
+              properties: { text: { type: 'string' } },
+              required: ['text'],
+            },
+          },
+        ],
+      };
+    } else if (message.method === 'tools/call') {
+      result = {
+        content: [
+          { type: 'text', text: `mcp:${message.params.arguments.text}` },
+        ],
+        isError: false,
+      };
+    } else {
+      response
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            error: { code: -32601, message: 'unsupported' },
+          })
+        );
+      return;
+    }
+    response
+      .writeHead(200, {
+        'content-type': 'application/json',
+        'mcp-session-id': 'node-test-session',
+      })
+      .end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/mcp`;
+
+  let calls = 0;
+  const model = async (request) => {
+    calls += 1;
+    if (calls === 1) {
+      return {
+        message: {
+          role: 'assistant',
+          tool_calls: [
+            {
+              id: 'mcp-call',
+              name: 'remote_echo',
+              arguments: { text: 'hello' },
+            },
+          ],
+        },
+        finish_reason: 'tool_calls',
+      };
+    }
+    const tool = request.messages.findLast((message) => message.role === 'tool');
+    return {
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: tool.content[0].text }],
+      },
+      finish_reason: 'stop',
+    };
+  };
+
+  const agent = await createAgentAsync(
+    {
+      streaming: false,
+      mcp_servers: [{ url }],
+      openai: { model: 'node-mcp-model' },
+    },
+    { model }
+  );
+  try {
+    const output = await agent.run('use MCP');
+    assert.equal(output.text, 'mcp:hello');
+  } finally {
+    await agent.closeMcp();
+    agent.close();
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('createAgentAsync connects a stdio MCP server', async () => {
+  const script = `
+    const readline = require('node:readline');
+    const rl = readline.createInterface({ input: process.stdin });
+    rl.on('line', (line) => {
+      const message = JSON.parse(line);
+      if (message.id === undefined) return;
+      let result;
+      if (message.method === 'initialize') {
+        result = {
+          protocolVersion: '2025-06-18',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'node-stdio-test', version: '1.0.0' },
+        };
+      } else if (message.method === 'tools/list') {
+        result = {
+          tools: [{
+            name: 'stdio.echo',
+            description: 'Echo through stdio MCP',
+            inputSchema: {
+              type: 'object',
+              properties: { text: { type: 'string' } },
+              required: ['text'],
+            },
+          }],
+        };
+      } else if (message.method === 'tools/call') {
+        result = {
+          content: [{ type: 'text', text: 'stdio:' + message.params.arguments.text }],
+          isError: false,
+        };
+      } else {
+        result = {};
+      }
+      process.stdout.write(JSON.stringify({
+        jsonrpc: '2.0',
+        id: message.id,
+        result,
+      }) + '\\n');
+    });
+  `;
+
+  let calls = 0;
+  const model = async (request) => {
+    calls += 1;
+    if (calls === 1) {
+      return {
+        message: {
+          role: 'assistant',
+          tool_calls: [
+            {
+              id: 'stdio-call',
+              name: 'stdio_echo',
+              arguments: { text: 'hello' },
+            },
+          ],
+        },
+        finish_reason: 'tool_calls',
+      };
+    }
+    const tool = request.messages.findLast((message) => message.role === 'tool');
+    return {
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: tool.content[0].text }],
+      },
+      finish_reason: 'stop',
+    };
+  };
+
+  const agent = await createAgentAsync(
+    {
+      streaming: false,
+      mcp_servers: [
+        {
+          command: process.execPath,
+          args: ['-e', script],
+        },
+      ],
+      openai: { model: 'node-stdio-mcp-model' },
+    },
+    { model }
+  );
+  try {
+    const output = await agent.run('use stdio MCP');
+    assert.equal(output.text, 'stdio:hello');
+  } finally {
+    await agent.closeMcp();
+    agent.close();
+  }
 });
