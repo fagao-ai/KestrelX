@@ -15,6 +15,8 @@ const {
 test('contract version and capabilities', () => {
   assert.equal(contractVersion(), 1);
   assert.ok(capabilities().includes('streaming'));
+  assert.ok(capabilities().includes('session_store'));
+  assert.ok(capabilities().includes('memory_store'));
   assert.ok(!capabilities().includes('mcp_http'));
 });
 
@@ -112,4 +114,90 @@ test('JavaScript model, tool, and streaming events', async () => {
   assert.equal(session.messages.length, 4);
   assert.equal(session.messages[2].role, 'tool');
   agent.close();
+});
+
+test('custom JavaScript streamModel emits real-time deltas', async () => {
+  const deltas = [];
+  const agent = createAgent(
+    { streaming: true, openai: { model: 'js-stream-model' } },
+    {
+      streamModel: async (_request, emit) => {
+        emit({ type: 'text', text: 'one ' });
+        emit({ type: 'text', text: 'two' });
+        return {
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'one two' }],
+          },
+          finish_reason: 'stop',
+        };
+      },
+      onEvent: (event) => {
+        if (event.type === 'model_delta') {
+          deltas.push(event.delta.text);
+        }
+      },
+    }
+  );
+  const output = await agent.run('stream');
+  assert.equal(output.text, 'one two');
+  assert.deepEqual(deltas, ['one ', 'two']);
+  agent.close();
+});
+
+test('JS SessionStore and Memory callbacks', async () => {
+  const sessions = new Map();
+  const sessionStore = {
+    load: (id) => sessions.get(id) ?? null,
+    save: (session) => {
+      sessions.set(session.id, session);
+    },
+    delete: (id) => {
+      sessions.delete(id);
+    },
+  };
+  const memoryEntries = [
+    { id: 'memory-1', text: "The user's name is Ada", tags: ['profile'] },
+  ];
+  const memory = {
+    recall: () => memoryEntries,
+    remember: (entry) => {
+      memoryEntries.push(entry);
+    },
+  };
+  const requests = [];
+  let calls = 0;
+  const model = async (request) => {
+    calls += 1;
+    requests.push(request);
+    const text = calls === 1 ? 'first answer' : 'second answer';
+    return {
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text }],
+      },
+      finish_reason: 'stop',
+    };
+  };
+  const config = {
+    session_id: 'node-persisted-session',
+    streaming: true,
+    openai: { model: 'js-persisted-model' },
+    memory: { tools: true },
+  };
+
+  const first = createAgent(config, { model, sessionStore, memory });
+  assert.equal((await first.run('first prompt')).text, 'first answer');
+  first.close();
+  assert.ok(sessions.get('node-persisted-session'));
+
+  const second = createAgent(config, { model, sessionStore, memory });
+  assert.equal((await second.run('second prompt')).text, 'second answer');
+  second.close();
+
+  const history = JSON.stringify(requests.at(-1));
+  assert.match(history, /first prompt/);
+  assert.match(history, /first answer/);
+  assert.match(history, /second prompt/);
+  assert.match(history, /Ada/);
 });

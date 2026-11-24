@@ -1,14 +1,19 @@
 use std::{
-    sync::{Arc, RwLock},
+    collections::HashMap,
+    sync::{
+        Arc, Mutex as StdMutex, OnceLock, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
 use async_trait::async_trait;
 use kestrel::skills::SkillRegistry;
 use kestrel::{
-    Agent as CoreAgent, AgentEvent, ContextCompressor, EventSink, InMemoryMemory, Model,
-    ModelRequest, ModelResponse, OpenAiCompatible, Result as CoreResult, SlidingWindowCompressor,
-    SubAgentTool, SummarizingCompressor, TodoList, Tool, ToolContext, ToolOutput, ToolSpec,
+    Agent as CoreAgent, AgentEvent, ContextCompressor, EventSink, InMemoryMemory, Memory,
+    MemoryEntry, MemoryQuery, Model, ModelDelta, ModelRequest, ModelResponse, OpenAiCompatible,
+    Result as CoreResult, Session, SessionStore, SlidingWindowCompressor, SubAgentTool,
+    SummarizingCompressor, TodoList, Tool, ToolContext, ToolOutput, ToolSpec,
 };
 use kestrel_contract::{
     AgentConfig as WireConfig, Capability, CapabilitySet, CompressionKind, OpenAiSettings,
@@ -22,7 +27,13 @@ use napi::{
 use napi_derive::napi;
 use serde_json::Value;
 
-type ModelFn = ThreadsafeFunction<Value, Promise<Value>, Value, Status, false>;
+type ModelFn = ThreadsafeFunction<
+    FnArgs<(Value, String)>,
+    Promise<Value>,
+    FnArgs<(Value, String)>,
+    Status,
+    false,
+>;
 type ToolFn = ThreadsafeFunction<
     FnArgs<(String, Value)>,
     Promise<Value>,
@@ -31,6 +42,20 @@ type ToolFn = ThreadsafeFunction<
     false,
 >;
 type EventFn = ThreadsafeFunction<Value, UnknownReturnValue, Value, Status, false>;
+type SessionLoadFn = ThreadsafeFunction<String, Promise<Value>, String, Status, false>;
+type SessionSaveFn = ThreadsafeFunction<String, Promise<Value>, String, Status, false>;
+type SessionDeleteFn = ThreadsafeFunction<String, Promise<Value>, String, Status, false>;
+type MemoryRecallFn = ThreadsafeFunction<String, Promise<Value>, String, Status, false>;
+type MemoryRememberFn = ThreadsafeFunction<String, Promise<Value>, String, Status, false>;
+
+type ModelFunction = Function<'static, FnArgs<(Value, String)>, Promise<Value>>;
+type EventFunction = Function<'static, Value, UnknownReturnValue>;
+type StringPromiseFunction = Function<'static, String, Promise<Value>>;
+
+static DELTA_SENDERS: OnceLock<
+    StdMutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<ModelDelta>>>,
+> = OnceLock::new();
+static NEXT_DELTA_ID: AtomicU64 = AtomicU64::new(1);
 
 fn node_error(error: impl std::fmt::Display) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
@@ -48,6 +73,8 @@ fn node_capabilities() -> CapabilitySet {
         Capability::Subagent,
         Capability::Skills,
         Capability::HostTools,
+        Capability::SessionStore,
+        Capability::MemoryStore,
     ])
 }
 
@@ -72,11 +99,27 @@ pub fn validate_config(config: Value, has_custom_model: bool) -> Result<()> {
         .map_err(node_error)
 }
 
+/// Emits one ModelDelta for an active JavaScript model invocation.
+#[napi]
+pub fn emit_model_delta(token: String, delta: Value) -> Result<()> {
+    let delta: ModelDelta = serde_json::from_value(delta).map_err(node_error)?;
+    let senders = DELTA_SENDERS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let sender = senders
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&token)
+        .cloned();
+    if let Some(sender) = sender {
+        let _ = sender.send(delta);
+    }
+    Ok(())
+}
+
 fn build_model_callback(
-    callback: Function<'static, Value, Promise<Value>>,
+    callback: Function<'static, FnArgs<(Value, String)>, Promise<Value>>,
 ) -> Result<Arc<ModelFn>> {
     let callback: ModelFn = callback
-        .build_threadsafe_function::<Value>()
+        .build_threadsafe_function::<FnArgs<(Value, String)>>()
         .callee_handled::<false>()
         .build()?;
     Ok(Arc::new(callback))
@@ -102,10 +145,173 @@ fn build_event_callback(
     Ok(Arc::new(callback))
 }
 
+fn build_session_load_callback(
+    callback: Function<'static, String, Promise<Value>>,
+) -> Result<Arc<SessionLoadFn>> {
+    let callback: SessionLoadFn = callback
+        .build_threadsafe_function::<String>()
+        .callee_handled::<false>()
+        .build()?;
+    Ok(Arc::new(callback))
+}
+
+fn build_session_save_callback(
+    callback: Function<'static, String, Promise<Value>>,
+) -> Result<Arc<SessionSaveFn>> {
+    let callback: SessionSaveFn = callback
+        .build_threadsafe_function::<String>()
+        .callee_handled::<false>()
+        .build()?;
+    Ok(Arc::new(callback))
+}
+
+fn build_session_delete_callback(
+    callback: Function<'static, String, Promise<Value>>,
+) -> Result<Arc<SessionDeleteFn>> {
+    let callback: SessionDeleteFn = callback
+        .build_threadsafe_function::<String>()
+        .callee_handled::<false>()
+        .build()?;
+    Ok(Arc::new(callback))
+}
+
+fn build_memory_recall_callback(
+    callback: Function<'static, String, Promise<Value>>,
+) -> Result<Arc<MemoryRecallFn>> {
+    let callback: MemoryRecallFn = callback
+        .build_threadsafe_function::<String>()
+        .callee_handled::<false>()
+        .build()?;
+    Ok(Arc::new(callback))
+}
+
+fn build_memory_remember_callback(
+    callback: Function<'static, String, Promise<Value>>,
+) -> Result<Arc<MemoryRememberFn>> {
+    let callback: MemoryRememberFn = callback
+        .build_threadsafe_function::<String>()
+        .callee_handled::<false>()
+        .build()?;
+    Ok(Arc::new(callback))
+}
+
+struct JsSessionStore {
+    load: Arc<SessionLoadFn>,
+    save: Arc<SessionSaveFn>,
+    delete: Option<Arc<SessionDeleteFn>>,
+}
+
+#[async_trait]
+impl SessionStore for JsSessionStore {
+    async fn load(&self, id: &str) -> CoreResult<Option<Session>> {
+        let promise = self
+            .load
+            .call_async(id.to_owned())
+            .await
+            .map_err(|error| kestrel::Error::Protocol(error.to_string()))?;
+        let value = promise
+            .await
+            .map_err(|error| kestrel::Error::Protocol(error.to_string()))?;
+        if value.is_null() {
+            Ok(None)
+        } else {
+            let json = value.as_str().ok_or_else(|| {
+                kestrel::Error::Protocol(
+                    "JavaScript session loader must return JSON or null".to_owned(),
+                )
+            })?;
+            serde_json::from_str(json).map(Some).map_err(|error| {
+                kestrel::Error::Protocol(format!("invalid JavaScript session: {error}"))
+            })
+        }
+    }
+
+    async fn save(&self, session: &Session) -> CoreResult<()> {
+        let json = serde_json::to_string(session)?;
+        let promise = self
+            .save
+            .call_async(json)
+            .await
+            .map_err(|error| kestrel::Error::Protocol(error.to_string()))?;
+        promise
+            .await
+            .map_err(|error| kestrel::Error::Protocol(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> CoreResult<()> {
+        let Some(delete) = &self.delete else {
+            return Ok(());
+        };
+        let promise = delete
+            .call_async(id.to_owned())
+            .await
+            .map_err(|error| kestrel::Error::Protocol(error.to_string()))?;
+        promise
+            .await
+            .map_err(|error| kestrel::Error::Protocol(error.to_string()))?;
+        Ok(())
+    }
+}
+
+struct JsMemory {
+    recall: Arc<MemoryRecallFn>,
+    remember: Arc<MemoryRememberFn>,
+}
+
+#[async_trait]
+impl Memory for JsMemory {
+    async fn remember(&self, entry: MemoryEntry) -> CoreResult<()> {
+        let json = serde_json::to_string(&entry)?;
+        let promise = self
+            .remember
+            .call_async(json)
+            .await
+            .map_err(|error| kestrel::Error::Memory(error.to_string()))?;
+        promise
+            .await
+            .map_err(|error| kestrel::Error::Memory(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn recall(&self, query: &MemoryQuery) -> CoreResult<Vec<MemoryEntry>> {
+        let json = serde_json::to_string(query)?;
+        let promise = self
+            .recall
+            .call_async(json)
+            .await
+            .map_err(|error| kestrel::Error::Memory(error.to_string()))?;
+        let value = promise
+            .await
+            .map_err(|error| kestrel::Error::Memory(error.to_string()))?;
+        let json = value.as_str().ok_or_else(|| {
+            kestrel::Error::Memory("JavaScript memory recall must return a JSON string".to_owned())
+        })?;
+        serde_json::from_str(json).map_err(|error| {
+            kestrel::Error::Memory(format!("invalid JavaScript memory entries: {error}"))
+        })
+    }
+}
+
 struct JsModel {
     name: String,
     context_window: Option<usize>,
     callback: Arc<ModelFn>,
+}
+
+struct DeltaRegistration {
+    token: String,
+}
+
+impl Drop for DeltaRegistration {
+    fn drop(&mut self) {
+        if let Some(senders) = DELTA_SENDERS.get() {
+            senders
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&self.token);
+        }
+    }
 }
 
 #[async_trait]
@@ -119,16 +325,65 @@ impl Model for JsModel {
     }
 
     async fn complete(&self, request: ModelRequest) -> CoreResult<ModelResponse> {
+        self.complete_internal(request, None).await
+    }
+
+    async fn complete_stream(
+        &self,
+        request: ModelRequest,
+        on_delta: &(dyn Fn(ModelDelta) + Send + Sync),
+    ) -> CoreResult<ModelResponse> {
+        self.complete_internal(request, Some(on_delta)).await
+    }
+}
+
+impl JsModel {
+    async fn complete_internal(
+        &self,
+        request: ModelRequest,
+        on_delta: Option<&(dyn Fn(ModelDelta) + Send + Sync)>,
+    ) -> CoreResult<ModelResponse> {
         let request_value = serde_json::to_value(request)
             .map_err(|error| kestrel::Error::Model(error.to_string()))?;
+        let token = NEXT_DELTA_ID.fetch_add(1, Ordering::Relaxed).to_string();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        DELTA_SENDERS
+            .get_or_init(|| StdMutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(token.clone(), sender);
+        let _registration = DeltaRegistration {
+            token: token.clone(),
+        };
         let promise = self
             .callback
-            .call_async(request_value)
+            .call_async(FnArgs::from((request_value, token)))
             .await
             .map_err(|error| kestrel::Error::Model(error.to_string()))?;
-        let response_value = promise
-            .await
-            .map_err(|error| kestrel::Error::Model(error.to_string()))?;
+        tokio::pin!(promise);
+        let mut channel_open = true;
+        let response_value = loop {
+            tokio::select! {
+                delta = receiver.recv(), if channel_open => {
+                    match delta {
+                        Some(delta) => {
+                            if let Some(on_delta) = on_delta {
+                                on_delta(delta);
+                            }
+                        }
+                        None => channel_open = false,
+                    }
+                }
+                result = &mut promise => {
+                    break result.map_err(|error| kestrel::Error::Model(error.to_string()))?;
+                }
+            }
+        };
+        while let Ok(delta) = receiver.try_recv() {
+            if let Some(on_delta) = on_delta {
+                on_delta(delta);
+            }
+        }
         serde_json::from_value(response_value).map_err(|error| {
             kestrel::Error::InvalidModelResponse(format!(
                 "JavaScript model returned invalid response: {error}"
@@ -217,19 +472,55 @@ pub struct Agent {
 
 /// Creates a Kestrel agent.
 #[napi]
+#[allow(clippy::too_many_arguments)]
 pub fn create_agent(
     config: Value,
-    model: Option<Function<'static, Value, Promise<Value>>>,
-    event_handler: Option<Function<'static, Value, UnknownReturnValue>>,
+    model: Option<ModelFunction>,
+    event_handler: Option<EventFunction>,
+    session_load: Option<StringPromiseFunction>,
+    session_save: Option<StringPromiseFunction>,
+    session_delete: Option<StringPromiseFunction>,
+    memory_recall: Option<StringPromiseFunction>,
+    memory_remember: Option<StringPromiseFunction>,
 ) -> Result<Agent> {
-    let config = WireConfig::parse_value(config).map_err(node_error)?;
+    let mut config = WireConfig::parse_value(config).map_err(node_error)?;
+    if memory_recall.is_some() || memory_remember.is_some() {
+        config.memory.enabled = true;
+    }
     config
         .validate(model.is_some(), &node_capabilities())
         .map_err(node_error)?;
     let events = EventSlot::default();
     events.set(event_handler)?;
     let model = model.map(build_model_callback).transpose()?;
-    build_agent(config, model, events).map_err(node_error)
+    if session_load.is_some() != session_save.is_some() {
+        return Err(node_error(
+            "sessionStore must provide both load and save methods",
+        ));
+    }
+    let session_store = match (session_load, session_save) {
+        (Some(load), Some(save)) => Some(Arc::new(JsSessionStore {
+            load: build_session_load_callback(load)?,
+            save: build_session_save_callback(save)?,
+            delete: session_delete
+                .map(build_session_delete_callback)
+                .transpose()?,
+        }) as Arc<dyn SessionStore>),
+        _ => None,
+    };
+    let memory = match (memory_recall, memory_remember) {
+        (Some(recall), Some(remember)) => Some(Arc::new(JsMemory {
+            recall: build_memory_recall_callback(recall)?,
+            remember: build_memory_remember_callback(remember)?,
+        }) as Arc<dyn Memory>),
+        (None, None) => None,
+        _ => {
+            return Err(node_error(
+                "memory must provide both recall and remember methods",
+            ));
+        }
+    };
+    build_agent(config, model, events, session_store, memory).map_err(node_error)
 }
 
 #[napi]
@@ -307,6 +598,8 @@ fn build_agent(
     config: WireConfig,
     model: Option<Arc<ModelFn>>,
     events: EventSlot,
+    session_store: Option<Arc<dyn SessionStore>>,
+    memory: Option<Arc<dyn Memory>>,
 ) -> CoreResult<Agent> {
     let model = match model {
         Some(callback) => Arc::new(JsModel {
@@ -326,6 +619,9 @@ fn build_agent(
         .event_sink(Arc::new(JsEventSink {
             slot: events.clone(),
         }));
+    if let Some(session_store) = session_store {
+        builder = builder.session_store(session_store);
+    }
     if let Some(system_prompt) = config.system_prompt.clone() {
         builder = builder.system_prompt(system_prompt);
     }
@@ -353,7 +649,14 @@ fn build_agent(
         todos = Some(list);
     }
 
-    if config.memory.enabled {
+    if let Some(memory) = memory {
+        builder = builder
+            .memory(memory)
+            .memory_options(config.memory_options());
+        if config.memory.tools {
+            builder = builder.with_memory_tools();
+        }
+    } else if config.memory.enabled {
         builder = builder
             .memory(Arc::new(InMemoryMemory::new()))
             .memory_options(config.memory_options());

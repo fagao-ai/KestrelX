@@ -86,6 +86,30 @@ export type ToolHandler = (
   arguments_: Record<string, unknown>
 ) => Promise<ToolOutput | string>;
 export type EventHandler = (event: AgentEvent) => void;
+export type StreamingModelHandler = (
+  request: ModelRequest,
+  emit: (delta: ModelDelta) => void
+) => Promise<ModelResponse>;
+
+export interface SessionStore {
+  load(sessionId: string): Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
+  save(session: Record<string, unknown>): Promise<void> | void;
+  delete?(sessionId: string): Promise<void> | void;
+}
+
+export interface Memory {
+  recall(query: Record<string, unknown>): Promise<unknown[]> | unknown[];
+  remember(entry: Record<string, unknown>): Promise<void> | void;
+}
+
+export interface AgentOptions {
+  model?: ModelHandler;
+  streamModel?: StreamingModelHandler;
+  onEvent?: EventHandler;
+  eventHandler?: EventHandler;
+  sessionStore?: SessionStore;
+  memory?: Memory;
+}
 
 export declare function contractVersion(): number;
 export declare function capabilities(): string[];
@@ -98,6 +122,10 @@ export declare function createAgent(
   config: Record<string, unknown>,
   model?: ModelHandler,
   eventHandler?: EventHandler
+): Agent;
+export declare function createAgent(
+  config: Record<string, unknown>,
+  options?: AgentOptions
 ): Agent;
 
 export declare class Agent {

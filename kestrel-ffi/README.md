@@ -320,8 +320,8 @@ node example.js
 
 It supports async JavaScript models and tools, event callbacks, OpenAI config,
 Todo, in-memory memory tools, compression, Skills, sub-agents, and TypeScript
-declarations. The initial addon does not yet expose JS-backed SessionStore,
-Memory, MCP config, or token streaming for custom JS models.
+declarations. JS-backed SessionStore/Memory and custom-model token streaming are
+also available. MCP config and explicit per-run handles are not yet exposed.
 
 ## Current limits
 
