@@ -141,10 +141,15 @@ impl Agent {
     /// Resets conversation history while preserving the session ID.
     pub async fn reset(&self) -> Result<()> {
         let _run_guard = self.state.run_lock.lock().await;
-        let id = self.state.session.read().await.id.clone();
+        self.ensure_loaded().await?;
+        let (id, revision) = {
+            let session = self.state.session.read().await;
+            (session.id.clone(), session.revision)
+        };
         {
             let mut session = self.state.session.write().await;
             *session = crate::Session::with_id(id);
+            session.revision = revision.saturating_add(1);
         }
         self.state
             .loaded

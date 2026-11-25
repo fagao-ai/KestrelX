@@ -501,3 +501,21 @@ async fn rejects_unsupported_persisted_session_schema() {
             if found == SESSION_SCHEMA_VERSION + 1 && supported == SESSION_SCHEMA_VERSION
     ));
 }
+
+#[tokio::test]
+async fn reset_preserves_monotonic_session_revision() {
+    let model = ScriptedModel::new([text_response("first")]);
+    let agent = Agent::builder(model)
+        .session_id("reset-revision")
+        .build()
+        .unwrap();
+    agent.run("hello").await.unwrap();
+    let before = agent.session().await.revision;
+    assert!(before > 0);
+
+    agent.reset().await.unwrap();
+    let reset = agent.session().await;
+    assert!(reset.revision > before);
+    assert!(reset.messages.is_empty());
+    assert!(reset.active_run.is_none());
+}
