@@ -18,11 +18,17 @@ use crate::{
 
 impl Agent {
     /// Runs one user turn to completion.
+    ///
+    /// Returns [`Error::ActiveRun`] when the session contains an interrupted
+    /// run. Call [`Agent::resume`] to continue it or reset the session first.
     pub async fn run(&self, input: impl Into<Message>) -> Result<AgentOutput> {
         self.run_with(input, Default::default()).await
     }
 
     /// Runs one user turn with cancellation and per-run event options.
+    ///
+    /// Returns [`Error::ActiveRun`] when the session contains an interrupted
+    /// run. Call [`Agent::resume_with`] to continue it or reset the session first.
     pub async fn run_with(
         &self,
         input: impl Into<Message>,

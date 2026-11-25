@@ -175,11 +175,42 @@ let agent = Agent::builder(model)
     .build()?;
 ```
 
-接入数据库时实现 `SessionStore` / `Memory` 即可。内置 `InMemoryMemory` 仅用于开发
-和测试，不包含 embedding。
+接入数据库时实现 `SessionStore` / `Memory` 即可。核心只提供 `InMemorySessionStore`
+和 `InMemoryMemory`，不绑定数据库依赖，也不负责第三方 schema migration。
+
+`Session` 带 `schema_version`、`revision` 和可选的 `active_run`。数据库 adapter 应保存
+完整的版本化 JSON/BLOB，并用 `revision` 做乐观并发控制；官方 SQLite/Postgres adapter
+未来会作为独立 crate 发布。
 
 `agent.reset()` 清空当前历史但保留 session ID；`agent.delete_session()` 会同时删除
 持久化记录并清空本地历史，下一次 run 使用相同 ID 从空会话开始。
+
+### 中断与恢复
+
+每次 run 会在安全边界写入 checkpoint。恢复使用原来的 `run_id` 继续，而不是创建新 run：
+
+```rust
+let output = agent.resume().await?;
+```
+
+如果持久化 session 里有未完成的 run，直接调用 `run()` 会返回 `Error::ActiveRun`；
+需要恢复就调用 `resume()`，需要放弃则先 `reset()`。
+
+工具执行中断属于不确定状态：默认不会自动重跑，可能返回 `Error::UnsafeResume`。
+只有明确接受副作用时才启用：
+
+```rust
+use kestrel::ResumeOptions;
+
+let output = agent
+    .resume_with(
+        ResumeOptions::default().with_uncertain_tool_retry(true),
+    )
+    .await?;
+```
+
+模型调用中断可以安全重试；已完成的工具结果会从 checkpoint 恢复。当前 resume 只在
+Rust 核心 API 提供，FFI/Node/Python/Go 的暴露留到接口稳定后。
 
 ### 事件
 
@@ -202,6 +233,31 @@ tokio::spawn(async move {
 `EventSink::emit` 是同步的，必须快速返回。跨语言 SDK 应转发到线程安全队列或 FFI
 callback，不要在 sink 内阻塞。每个事件信封都带 `run_id`、`session_id` 和单调递增的
 `sequence`，即使多个 agent 共用一个 channel 也能可靠归组。
+
+### Tracing
+
+核心使用 `tracing` facade。应用可以自行安装 subscriber 或 OTel bridge，无需修改
+Kestrel：
+
+```rust
+tracing_subscriber::fmt()
+    .with_env_filter("kestrel=debug")
+    .init();
+```
+
+主要 span 包括：
+
+- `agent.run`
+- `model.call`
+- `tool.call`
+- `context.compress`
+- `memory.recall`
+- `session.load`
+- `session.save`
+
+span 只记录 `run_id`、`session_id`、turn、模型名、工具名、token 和耗时等元数据，
+默认不记录 prompt、工具参数或工具输出，避免泄漏密钥和业务数据。`AgentEvent` 仍然是
+面向 SDK/客户端的稳定事件流，`tracing` 用于服务端诊断和遥测。
 
 ### 流式输出
 
@@ -443,6 +499,7 @@ bindings/node       # napi-rs 原生 addon
   在途 callback 返回后才报告取消，确保 `user_data` 生命周期安全。
 - Node addon 的 MCP 连接必须通过异步 `createAgentAsync()` 创建；显式 run handle
   可通过 `startRun()` 获取。
+- Resume 目前只在 Rust core 暴露；FFI 和语言 SDK 尚未增加对应入口。
 - 会话压缩会更新持久化历史；如需保留完整审计日志，应在 SessionStore 外单独存 event/audit。
 - 摘要压缩的额外模型调用，以及子 agent 的 token 用量，不计入父级 `AgentOutput.usage`。
 

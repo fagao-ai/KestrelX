@@ -299,6 +299,9 @@ pub trait SessionStore: Send + Sync {
     async fn load(&self, id: &str) -> Result<Option<Session>>;
 
     /// Creates or replaces a session.
+    ///
+    /// Implementations should persist the complete serializable session and
+    /// may use [`Session::revision`] for optimistic concurrency control.
     async fn save(&self, session: &Session) -> Result<()>;
 
     /// Deletes a session. The default implementation does nothing.

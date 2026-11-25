@@ -29,6 +29,10 @@
 //! forwards text and tool-call fragments through
 //! [`AgentEventKind::ModelDelta`]. Models without native streaming still work
 //! through the default single-chunk fallback.
+//!
+//! Interrupted runs are checkpointed in the session. Call [`Agent::resume`] to
+//! continue from the last safe step. Runtime diagnostics use the [`tracing`]
+//! facade and do not require an exporter in the library.
 
 mod agent;
 mod context;
