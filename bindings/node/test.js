@@ -250,6 +250,65 @@ test('startRun resolves its output once', async () => {
   agent.close();
 });
 
+test('resume and startResume continue a checkpointed run', async () => {
+  const sessions = new Map();
+  const sessionStore = {
+    load: (id) => sessions.get(id) ?? null,
+    save: (session) => sessions.set(session.id, session),
+  };
+  const checkpoint = (runId) => ({
+    schema_version: 1,
+    id: 'node-resume',
+    messages: [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'finish the interrupted run' }],
+      },
+    ],
+    metadata: {},
+    created_at_ms: 1,
+    updated_at_ms: 1,
+    revision: 1,
+    active_run: {
+      run_id: runId,
+      turn: 1,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      phase: { type: 'model_call' },
+      updated_at_ms: 1,
+    },
+  });
+  let calls = 0;
+  const model = async () => ({
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: `resumed ${++calls}` }],
+    },
+    finish_reason: 'stop',
+  });
+  const config = {
+    session_id: 'node-resume',
+    streaming: false,
+    openai: { model: 'node-resume-model' },
+  };
+
+  sessions.set('node-resume', checkpoint('node-run-1'));
+  const first = createAgent(config, { model, sessionStore });
+  await assert.rejects(first.run('new prompt'), /active run/);
+  const resumed = await first.resume();
+  assert.equal(resumed.run_id, 'node-run-1');
+  assert.equal(resumed.text, 'resumed 1');
+  assert.equal(sessions.get('node-resume').active_run, undefined);
+  first.close();
+
+  sessions.set('node-resume', checkpoint('node-run-2'));
+  const second = createAgent(config, { model, sessionStore });
+  const handle = second.startResume();
+  const output = await handle.result();
+  assert.equal(output.run_id, 'node-run-2');
+  assert.equal(output.text, 'resumed 2');
+  second.close();
+});
+
 test('createAgentAsync connects an HTTP MCP server', async () => {
   const http = require('node:http');
   const server = http.createServer(async (request, response) => {

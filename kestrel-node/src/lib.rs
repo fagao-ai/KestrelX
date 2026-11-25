@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    future::Future,
     path::PathBuf,
     sync::{
         Arc, Mutex as StdMutex, OnceLock, RwLock,
@@ -14,8 +15,9 @@ use kestrel::skills::SkillRegistry;
 use kestrel::{
     Agent as CoreAgent, AgentEvent, ContextCompressor, EventSink, InMemoryMemory, Memory,
     MemoryEntry, MemoryQuery, Model, ModelDelta, ModelRequest, ModelResponse, OpenAiCompatible,
-    Result as CoreResult, RunOptions, Session, SessionStore, SlidingWindowCompressor, SubAgentTool,
-    SummarizingCompressor, TodoList, Tool, ToolContext, ToolOutput, ToolSpec,
+    Result as CoreResult, ResumeOptions, RunOptions, Session, SessionStore,
+    SlidingWindowCompressor, SubAgentTool, SummarizingCompressor, TodoList, Tool, ToolContext,
+    ToolOutput, ToolSpec,
 };
 use kestrel_contract::{
     AgentConfig as WireConfig, Capability, CapabilitySet, CompressionKind, McpServerSettings,
@@ -669,16 +671,63 @@ impl Agent {
         serde_json::to_value(output).map_err(node_error)
     }
 
+    /// Resumes the session's interrupted run.
+    #[napi]
+    pub async fn resume(&self, retry_uncertain_tools: Option<bool>) -> Result<Value> {
+        let inner = self.core()?.clone();
+        let output = inner
+            .resume_with(
+                ResumeOptions::default()
+                    .with_uncertain_tool_retry(retry_uncertain_tools.unwrap_or(false)),
+            )
+            .await
+            .map_err(node_error)?;
+        serde_json::to_value(output).map_err(node_error)
+    }
+
     /// Starts a run and immediately returns a cancellable handle.
     #[napi]
     pub fn start_run(&self, prompt: String) -> Result<Run> {
         let inner = self.core()?.clone();
         let cancellation = CancellationToken::new();
         let run_token = cancellation.clone();
+        self.start_operation(
+            async move {
+                inner
+                    .run_with(prompt, RunOptions::default().with_cancellation(run_token))
+                    .await
+            },
+            cancellation,
+        )
+    }
+
+    /// Starts a resume and immediately returns a cancellable handle.
+    #[napi]
+    pub fn start_resume(&self, retry_uncertain_tools: Option<bool>) -> Result<Run> {
+        let inner = self.core()?.clone();
+        let cancellation = CancellationToken::new();
+        let run_token = cancellation.clone();
+        self.start_operation(
+            async move {
+                inner
+                    .resume_with(
+                        ResumeOptions::default()
+                            .with_cancellation(run_token)
+                            .with_uncertain_tool_retry(retry_uncertain_tools.unwrap_or(false)),
+                    )
+                    .await
+            },
+            cancellation,
+        )
+    }
+
+    fn start_operation<F>(&self, operation: F, cancellation: CancellationToken) -> Result<Run>
+    where
+        F: Future<Output = CoreResult<kestrel::AgentOutput>> + Send + 'static,
+    {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let task = napi::bindgen_prelude::spawn(async move {
-            let output = inner
-                .run_with(prompt, RunOptions::default().with_cancellation(run_token))
+            let output = operation
                 .await
                 .map_err(|error| error.to_string())
                 .and_then(|output| serde_json::to_value(output).map_err(|error| error.to_string()));

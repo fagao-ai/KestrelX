@@ -152,7 +152,9 @@ export declare function createAgentAsync(
 
 export declare class Agent {
   run(prompt: string): Promise<AgentOutput>;
+  resume(retryUncertainTools?: boolean): Promise<AgentOutput>;
   startRun(prompt: string): Run;
+  startResume(retryUncertainTools?: boolean): Run;
   session(): Promise<Record<string, unknown>>;
   todos(): unknown[] | null;
   reset(): Promise<void>;
