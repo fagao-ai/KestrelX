@@ -3,6 +3,7 @@ package kestrel
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -335,5 +336,97 @@ func TestGoSessionStoreAndMemory(t *testing.T) {
 	defer memory.mu.Unlock()
 	if len(memory.entries) != 1 {
 		t.Fatalf("memory entries = %d", len(memory.entries))
+	}
+}
+
+func TestResumeAndStartResume(t *testing.T) {
+	store := &mapSessionStore{}
+	modelCalls := 0
+	model := func(ModelRequest) (ModelResponse, error) {
+		modelCalls++
+		return ModelResponse{
+			Message: Message{
+				Role:    RoleAssistant,
+				Content: []ContentPart{TextPart(fmt.Sprintf("resumed %d", modelCalls))},
+			},
+			FinishReason: "stop",
+		}, nil
+	}
+	config := map[string]any{
+		"session_id": "go-resume",
+		"streaming":  false,
+		"openai":     map[string]any{"model": "go-resume-model"},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	seed := func(runID string) {
+		t.Helper()
+		value, err := json.Marshal(map[string]any{
+			"schema_version": 1,
+			"id":             "go-resume",
+			"messages": []any{
+				map[string]any{
+					"role": "user",
+					"content": []any{
+						map[string]any{"type": "text", "text": "finish the run"},
+					},
+				},
+			},
+			"metadata":      map[string]any{},
+			"created_at_ms": 1,
+			"updated_at_ms": 1,
+			"revision":      1,
+			"active_run": map[string]any{
+				"run_id":        runID,
+				"turn":          1,
+				"usage":         map[string]any{"input_tokens": 0, "output_tokens": 0},
+				"phase":         map[string]any{"type": "model_call"},
+				"updated_at_ms": 1,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.mu.Lock()
+		if store.sessions == nil {
+			store.sessions = make(map[string]json.RawMessage)
+		}
+		store.sessions["go-resume"] = value
+		store.mu.Unlock()
+	}
+
+	seed("go-run-1")
+	agent, err := New(config, WithModel(model), WithSessionStore(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := agent.Resume(ctx, false)
+	if err != nil {
+		agent.Close()
+		t.Fatal(err)
+	}
+	if output.RunID != "go-run-1" || output.Text != "resumed 1" {
+		t.Fatalf("unexpected resume output: %#v", output)
+	}
+	agent.Close()
+
+	seed("go-run-2")
+	agent, err = New(config, WithModel(model), WithSessionStore(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+	run, err := agent.StartResume(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer run.Close()
+	output, err = run.Wait(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output.RunID != "go-run-2" || output.Text != "resumed 2" {
+		t.Fatalf("unexpected async resume output: %#v", output)
 	}
 }

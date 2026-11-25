@@ -286,6 +286,16 @@ func (a *Agent) RunMessage(ctx context.Context, message Message) (*AgentOutput, 
 	return run.Wait(ctx)
 }
 
+// Resume continues the session's interrupted run and waits for completion.
+func (a *Agent) Resume(ctx context.Context, retryUncertainTools bool) (*AgentOutput, error) {
+	run, err := a.StartResume(retryUncertainTools)
+	if err != nil {
+		return nil, err
+	}
+	defer run.Close()
+	return run.Wait(ctx)
+}
+
 // StartRun starts a nonblocking run.
 func (a *Agent) StartRun(prompt string) (*Run, error) {
 	promptC := C.CString(prompt)
@@ -308,6 +318,19 @@ func (a *Agent) StartRunMessage(message Message) (*Run, error) {
 	return a.startRunC(func() (*C.KestrelRun, *C.char) {
 		var errorC *C.char
 		native := C.kestrel_agent_start_run_message(a.ptr, messageC, &errorC)
+		return native, errorC
+	})
+}
+
+// StartResume starts a nonblocking resume from the persisted checkpoint.
+func (a *Agent) StartResume(retryUncertainTools bool) (*Run, error) {
+	retry := C.int32_t(0)
+	if retryUncertainTools {
+		retry = 1
+	}
+	return a.startRunC(func() (*C.KestrelRun, *C.char) {
+		var errorC *C.char
+		native := C.kestrel_agent_start_resume(a.ptr, retry, &errorC)
 		return native, errorC
 	})
 }
