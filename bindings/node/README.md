@@ -53,6 +53,17 @@ try {
 `startRun()` returns immediately. `run.isDone()` checks native completion and
 `run.result()` can be consumed once.
 
+Interrupted runs can be resumed with either a Promise or a cancellable handle:
+
+```js
+const output = await agent.resume();
+// retryUncertainTools defaults to false:
+const run = agent.startResume(true);
+const resumed = await run.result();
+```
+
+`retryUncertainTools: true` is only for tools whose repeated execution is safe.
+
 Custom JavaScript models are async functions returning a serialized
 `ModelResponse` shape:
 

@@ -33,8 +33,10 @@ Main functions:
 | `kestrel_agent_set_event_callback` | receive `AgentEvent` JSON |
 | `kestrel_agent_run` | bidirectional blocking run for text input |
 | `kestrel_agent_run_message` | same, with a full `Message` JSON input |
+| `kestrel_agent_resume` | resume an interrupted run synchronously |
 | `kestrel_agent_builder_*` | builder with host SessionStore/Memory callbacks |
 | `kestrel_agent_start_run` | nonblocking run handle |
+| `kestrel_agent_start_resume` | nonblocking resume handle |
 | `kestrel_run_next_event` | poll the per-run event queue |
 | `kestrel_run_wait` | wait for final output without blocking the start |
 | `kestrel_run_is_done` / `kestrel_run_cancel` / `kestrel_run_free` | run lifecycle |
@@ -230,9 +232,9 @@ Events include:
 
 ## Async run handles
 
-`kestrel_agent_start_run*` returns immediately with a `KestrelRun`. The agent
-accepts only one active run at a time, but the host can keep processing its own
-event loop while the Rust runtime executes.
+`kestrel_agent_start_run*` and `kestrel_agent_start_resume` return immediately
+with a `KestrelRun`. The agent accepts only one active run at a time, but the
+host can keep processing its own event loop while the Rust runtime executes.
 
 `kestrel_run_next_event` returns:
 
@@ -283,12 +285,13 @@ PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
+PYTHONPATH=bindings/python python3 bindings/python/example_resume.py
 ```
 
 The ctypes wrapper supports OpenAI config, custom model callbacks, tools, events,
-session snapshots, todos, reset, cancellation, and `start_run` /
-`next_event_async` / `wait_async`, plus host-backed session and memory objects.
-Custom models can stream through `stream_model=callback(request, emit)`.
+session snapshots, todos, reset, cancellation, `resume`, and `start_run` /
+`start_resume` / `next_event_async` / `wait_async`, plus host-backed session and
+memory objects. Custom models can stream through `stream_model=callback(request, emit)`.
 
 ## Go reference binding
 

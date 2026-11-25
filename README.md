@@ -209,8 +209,8 @@ let output = agent
     .await?;
 ```
 
-模型调用中断可以安全重试；已完成的工具结果会从 checkpoint 恢复。当前 resume 只在
-Rust 核心 API 提供，FFI/Node/Python/Go 的暴露留到接口稳定后。
+模型调用中断可以安全重试；已完成的工具结果会从 checkpoint 恢复。Rust、FFI、
+Node、Python 和 Go SDK 都提供同步 resume；FFI/Node/Python 还提供非阻塞 resume handle。
 
 ### 事件
 
@@ -394,6 +394,7 @@ let agent = builder.build()?;
 - 宿主语言 tool callback
 - 同步事件 callback（包含 `model_delta`）
 - 阻塞 run、非阻塞 `KestrelRun`、事件轮询、跨线程取消、Session/Todo JSON 快照
+- 同步 resume 与非阻塞 `start_resume`
 - 通过 builder callback 接入宿主数据库的 SessionStore 与长期 Memory
 - 内置 Tokio runtime，不要求宿主语言理解 Rust async
 
@@ -450,6 +451,7 @@ PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
+PYTHONPATH=bindings/python python3 bindings/python/example_resume.py
 ```
 
 `bindings/go` 是纯 cgo、无第三方 Go 依赖的参考 SDK：
@@ -499,7 +501,7 @@ bindings/node       # napi-rs 原生 addon
   在途 callback 返回后才报告取消，确保 `user_data` 生命周期安全。
 - Node addon 的 MCP 连接必须通过异步 `createAgentAsync()` 创建；显式 run handle
   可通过 `startRun()` 获取。
-- Resume 目前只在 Rust core 暴露；FFI 和语言 SDK 尚未增加对应入口。
+- Resume 只支持从安全 checkpoint 继续；工具执行中的不确定状态需要显式允许重试。
 - 会话压缩会更新持久化历史；如需保留完整审计日志，应在 SessionStore 外单独存 event/audit。
 - 摘要压缩的额外模型调用，以及子 agent 的 token 用量，不计入父级 `AgentOutput.usage`。
 

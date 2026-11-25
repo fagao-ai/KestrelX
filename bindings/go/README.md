@@ -21,6 +21,7 @@ paths in `callbacks.go`, or provide an equivalent deployment layout.
 - synchronous tools
 - event callbacks and per-run event polling
 - blocking `Run(ctx)` and nonblocking `StartRun` / `Run.Wait`
+- blocking `Resume(ctx, retry)` and nonblocking `StartResume`
 - cancellation through `context.Context`
 - SessionStore and long-term Memory callbacks
 - session reset and deletion

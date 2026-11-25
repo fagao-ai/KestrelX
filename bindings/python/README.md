@@ -8,6 +8,7 @@ PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
+PYTHONPATH=bindings/python python3 bindings/python/example_resume.py
 ```
 
 Set `KESTREL_FFI_PATH` when the shared library is not under `target/debug` or
@@ -53,6 +54,10 @@ Objects follow the same protocols as the Rust traits:
 
 Use `agent.reset()` to clear history while preserving the session ID, or
 `agent.delete_session()` to remove the stored session as well.
+
+`agent.resume()` continues an interrupted run. `agent.start_resume()` returns
+the same pollable `Run` handle as `start_run()`. Pass
+`retry_uncertain_tools=True` only when re-running an interrupted tool is safe.
 
 See `example_persistence.py` for an in-memory database example.
 
