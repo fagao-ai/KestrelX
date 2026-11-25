@@ -4,7 +4,8 @@ use std::{sync::Arc, time::Duration};
 
 use kestrel::{
     Agent, AgentEventKind, Error, InMemorySessionStore, Message, ResumeOptions, RunCheckpoint,
-    RunOptions, Session, SessionStore, ToolOutput, ToolSpec, Usage, event_channel, function_tool,
+    RunOptions, SESSION_SCHEMA_VERSION, Session, SessionStore, ToolOutput, ToolSpec, Usage,
+    event_channel, function_tool,
 };
 use serde_json::json;
 use support::{
@@ -469,4 +470,34 @@ async fn refuses_to_replay_an_uncertain_tool_without_opt_in() {
         .await
         .unwrap();
     assert_eq!(output.text, "retried");
+}
+
+#[tokio::test]
+async fn resume_requires_an_active_run() {
+    let model = ScriptedModel::new([text_response("unused")]);
+    let agent = Agent::builder(model)
+        .session_id("no-active-run")
+        .build()
+        .unwrap();
+    assert!(matches!(agent.resume().await, Err(Error::NoActiveRun)));
+}
+
+#[tokio::test]
+async fn rejects_unsupported_persisted_session_schema() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut session = Session::with_id("future-schema");
+    session.schema_version = SESSION_SCHEMA_VERSION + 1;
+    store.save(&session).await.unwrap();
+
+    let model = ScriptedModel::new([text_response("unused")]);
+    let agent = Agent::builder(model)
+        .session_store(store)
+        .session_id("future-schema")
+        .build()
+        .unwrap();
+    assert!(matches!(
+        agent.run("hello").await,
+        Err(Error::UnsupportedSessionVersion { found, supported })
+            if found == SESSION_SCHEMA_VERSION + 1 && supported == SESSION_SCHEMA_VERSION
+    ));
 }
