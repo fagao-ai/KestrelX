@@ -8,6 +8,7 @@ use std::{
 };
 
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::{
     Agent, AgentEvent, AgentEventKind, AgentOutput, CompressionRequest, Error, EventSink,
@@ -162,6 +163,16 @@ impl Agent {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "agent.run",
+        skip_all,
+        fields(
+            run_id = %checkpoint.run_id,
+            session_id = %events.session_id,
+            model = %self.shared.model.name()
+        ),
+        err
+    )]
     async fn drive_run(
         &self,
         mut checkpoint: RunCheckpoint,
@@ -274,22 +285,38 @@ impl Agent {
                         temperature: self.shared.config.temperature,
                         max_tokens: self.shared.config.max_output_tokens,
                     };
-                    let response = if self.shared.config.streaming {
-                        let on_delta = |delta| {
-                            events.emit(AgentEventKind::ModelDelta { turn, delta });
-                        };
-                        cancellable(
-                            cancellation,
-                            self.shared.model.complete_stream(request, &on_delta),
-                        )
-                        .await?
-                    } else {
-                        cancellable(cancellation, self.shared.model.complete(request)).await?
-                    };
+                    let model_span = tracing::info_span!(
+                        "model.call",
+                        model = %self.shared.model.name(),
+                        turn,
+                        streaming = self.shared.config.streaming
+                    );
+                    let response = async {
+                        if self.shared.config.streaming {
+                            let on_delta = |delta| {
+                                events.emit(AgentEventKind::ModelDelta { turn, delta });
+                            };
+                            cancellable(
+                                cancellation,
+                                self.shared.model.complete_stream(request, &on_delta),
+                            )
+                            .await
+                        } else {
+                            cancellable(cancellation, self.shared.model.complete(request)).await
+                        }
+                    }
+                    .instrument(model_span)
+                    .await?;
                     check_cancelled(cancellation)?;
                     validate_response(&response.message)?;
 
                     usage += response.usage;
+                    tracing::debug!(
+                        input_tokens = response.usage.input_tokens,
+                        output_tokens = response.usage.output_tokens,
+                        finish_reason = ?response.finish_reason,
+                        "model call completed"
+                    );
                     events.emit(AgentEventKind::ModelCompleted {
                         turn,
                         usage: response.usage,
@@ -329,6 +356,12 @@ impl Agent {
         }
     }
 
+    #[tracing::instrument(
+        name = "tool.call",
+        skip_all,
+        fields(turn, tool = %call.name, call_id = %call.id),
+        err
+    )]
     async fn execute_tool(
         &self,
         turn: usize,
@@ -401,14 +434,23 @@ impl Agent {
             return Ok(history);
         }
 
-        let compression = cancellable(
-            cancellation,
-            compressor.compress(CompressionRequest {
-                messages: history,
-                budget_tokens: available,
-                token_counter: self.shared.token_counter.clone(),
-            }),
-        )
+        let compression_span = tracing::info_span!(
+            "context.compress",
+            budget_tokens = available,
+            history_tokens = current
+        );
+        let compression = async {
+            cancellable(
+                cancellation,
+                compressor.compress(CompressionRequest {
+                    messages: history,
+                    budget_tokens: available,
+                    token_counter: self.shared.token_counter.clone(),
+                }),
+            )
+            .await
+        }
+        .instrument(compression_span)
         .await?;
         validate_history(&compression.messages)?;
 
@@ -426,6 +468,13 @@ impl Agent {
                 compression.after_tokens, available
             )));
         }
+        tracing::debug!(
+            before_tokens = compression.before_tokens,
+            after_tokens = compression.after_tokens,
+            removed_messages = compression.removed_messages,
+            summarized = compression.summarized,
+            "context compressed"
+        );
 
         Ok(compression.messages)
     }
@@ -464,12 +513,20 @@ impl Agent {
             return Ok(None);
         }
 
-        let entries = cancellable(
-            cancellation,
-            memory.recall(
-                &MemoryQuery::new(query).with_limit(self.shared.memory_options.recall_limit),
-            ),
-        )
+        let span = tracing::info_span!(
+            "memory.recall",
+            limit = self.shared.memory_options.recall_limit
+        );
+        let entries = async {
+            cancellable(
+                cancellation,
+                memory.recall(
+                    &MemoryQuery::new(query).with_limit(self.shared.memory_options.recall_limit),
+                ),
+            )
+            .await
+        }
+        .instrument(span)
         .await?;
         check_cancelled(cancellation)?;
         if entries.is_empty() {
@@ -494,6 +551,7 @@ impl Agent {
             return Ok(None);
         }
 
+        tracing::debug!(count = injected, "memory context injected");
         events.emit(AgentEventKind::MemoryRecalled { count: injected });
         Ok(Some(format!(
             "Long-term memory retrieved for this task. Memory may be stale or \
@@ -529,26 +587,32 @@ impl Agent {
             return Ok(());
         }
         let id = self.state.session.read().await.id.clone();
-        if let Some(store) = &self.state.session_store
-            && let Some(session) = store.load(&id).await?
-        {
-            if session.id != id {
-                return Err(Error::Protocol(format!(
-                    "session store returned session `{}` for requested id `{id}`",
-                    session.id
-                )));
+        let span = tracing::info_span!("session.load", session_id = %id);
+        async {
+            if let Some(store) = &self.state.session_store
+                && let Some(session) = store.load(&id).await?
+            {
+                if session.id != id {
+                    return Err(Error::Protocol(format!(
+                        "session store returned session `{}` for requested id `{id}`",
+                        session.id
+                    )));
+                }
+                if session.schema_version != SESSION_SCHEMA_VERSION {
+                    return Err(Error::UnsupportedSessionVersion {
+                        found: session.schema_version,
+                        supported: SESSION_SCHEMA_VERSION,
+                    });
+                }
+                if let Some(checkpoint) = &session.active_run {
+                    checkpoint.validate()?;
+                }
+                *self.state.session.write().await = session;
             }
-            if session.schema_version != SESSION_SCHEMA_VERSION {
-                return Err(Error::UnsupportedSessionVersion {
-                    found: session.schema_version,
-                    supported: SESSION_SCHEMA_VERSION,
-                });
-            }
-            if let Some(checkpoint) = &session.active_run {
-                checkpoint.validate()?;
-            }
-            *self.state.session.write().await = session;
+            Ok::<(), Error>(())
         }
+        .instrument(span)
+        .await?;
         self.state.loaded.store(true, Ordering::Release);
         Ok(())
     }
@@ -569,9 +633,21 @@ impl Agent {
         let mut session = self.state.session.read().await.clone();
         update(&mut session)?;
         session.touch();
-        if let Some(store) = &self.state.session_store {
-            store.save(&session).await?;
+        let span = tracing::info_span!(
+            "session.save",
+            session_id = %session.id,
+            revision = session.revision,
+            active_run = session.active_run.is_some(),
+            messages = session.messages.len()
+        );
+        async {
+            if let Some(store) = &self.state.session_store {
+                store.save(&session).await?;
+            }
+            Ok::<(), Error>(())
         }
+        .instrument(span)
+        .await?;
         *self.state.session.write().await = session.clone();
         Ok(session)
     }
@@ -586,7 +662,14 @@ impl Agent {
             return Ok(());
         };
         let session = self.state.session.read().await.clone();
-        store.save(&session).await
+        let span = tracing::info_span!(
+            "session.save",
+            session_id = %session.id,
+            revision = session.revision,
+            active_run = session.active_run.is_some(),
+            messages = session.messages.len()
+        );
+        async { store.save(&session).await }.instrument(span).await
     }
 }
 
@@ -600,11 +683,20 @@ fn tool_content(output: &ToolOutput) -> String {
 
 fn emit_run_result(events: &EventContext, result: &Result<AgentOutput>) {
     match result {
-        Ok(output) => events.emit(AgentEventKind::RunCompleted {
-            text: output.text.clone(),
-            turns: output.turns,
-            usage: output.usage,
-        }),
+        Ok(output) => {
+            tracing::info!(
+                run_id = %output.run_id,
+                turns = output.turns,
+                input_tokens = output.usage.input_tokens,
+                output_tokens = output.usage.output_tokens,
+                "agent run completed"
+            );
+            events.emit(AgentEventKind::RunCompleted {
+                text: output.text.clone(),
+                turns: output.turns,
+                usage: output.usage,
+            });
+        }
         Err(error) => events.emit(AgentEventKind::RunFailed {
             error: error.to_string(),
         }),

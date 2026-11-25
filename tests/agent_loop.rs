@@ -119,6 +119,18 @@ async fn forwards_incremental_model_output() {
 }
 
 #[tokio::test]
+#[tracing_test::traced_test]
+async fn emits_structured_tracing_events() {
+    let model = ScriptedModel::new([text_response("traced")]);
+    let agent = Agent::builder(model).build().unwrap();
+
+    let output = agent.run("trace this").await.unwrap();
+    assert_eq!(output.text, "traced");
+    assert!(logs_contain("model call completed"));
+    assert!(logs_contain("agent run completed"));
+}
+
+#[tokio::test]
 async fn feeds_recoverable_tool_errors_back_to_the_model() {
     let failing = function_tool(
         ToolSpec::new("explode", "Always fails", object_schema()),
