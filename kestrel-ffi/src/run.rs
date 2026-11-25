@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use kestrel::{AgentOutput, Message, RunOptions};
+use kestrel::{AgentOutput, Message, ResumeOptions, RunOptions};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -142,7 +142,12 @@ enum WaitPoll {
     Timeout,
 }
 
-fn start_run(agent: &KestrelAgent, message: Message) -> Result<KestrelRun, String> {
+enum RunRequest {
+    Message(Message),
+    Resume { retry_uncertain_tools: bool },
+}
+
+fn start_run(agent: &KestrelAgent, request: RunRequest) -> Result<KestrelRun, String> {
     let cancellation = CancellationToken::new();
     let lease = agent.begin_run(cancellation.clone())?;
     let (event_sender, event_receiver) = mpsc::channel();
@@ -152,14 +157,30 @@ fn start_run(agent: &KestrelAgent, message: Message) -> Result<KestrelRun, Strin
     let inner_agent = agent.inner.clone();
 
     let handle = runtime::spawn(async move {
-        let result = inner_agent
-            .run_with(
-                message,
-                RunOptions::default()
-                    .with_cancellation(cancellation)
-                    .with_event_sink(event_sink),
-            )
-            .await;
+        let result = match request {
+            RunRequest::Message(message) => {
+                inner_agent
+                    .run_with(
+                        message,
+                        RunOptions::default()
+                            .with_cancellation(cancellation)
+                            .with_event_sink(event_sink),
+                    )
+                    .await
+            }
+            RunRequest::Resume {
+                retry_uncertain_tools,
+            } => {
+                inner_agent
+                    .resume_with(
+                        ResumeOptions::default()
+                            .with_cancellation(cancellation)
+                            .with_event_sink(event_sink)
+                            .with_uncertain_tool_retry(retry_uncertain_tools),
+                    )
+                    .await
+            }
+        };
         let completion = match result {
             Ok(output) => serialize_output(&output),
             Err(error) => Err(error.to_string()),
@@ -210,7 +231,7 @@ pub unsafe extern "C" fn kestrel_agent_start_run(
         // SAFETY: pointers follow the C contract.
         let agent = unsafe { agent_ref(agent) }?;
         let prompt = unsafe { required_string(prompt, "prompt") }?;
-        start_run(agent, Message::user(prompt))
+        start_run(agent, RunRequest::Message(Message::user(prompt)))
     });
     match result {
         Ok(run) => Box::into_raw(Box::new(run)),
@@ -241,7 +262,43 @@ pub unsafe extern "C" fn kestrel_agent_start_run_message(
         let message_json = unsafe { required_string(message_json, "message_json") }?;
         let message: Message = serde_json::from_str(&message_json)
             .map_err(|error| format!("invalid message JSON: {error}"))?;
-        start_run(agent, message)
+        start_run(agent, RunRequest::Message(message))
+    });
+    match result {
+        Ok(run) => Box::into_raw(Box::new(run)),
+        Err(error_message) => {
+            // SAFETY: out_error follows the C contract.
+            unsafe { set_error(error, error_message) };
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Starts a nonblocking resume from the persisted checkpoint.
+///
+/// `retry_uncertain_tools` must be non-zero to re-run a tool whose result was
+/// not checkpointed.
+///
+/// # Safety
+///
+/// Pointers follow the C ABI contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kestrel_agent_start_resume(
+    agent: *mut KestrelAgent,
+    retry_uncertain_tools: c_int,
+    error: *mut *mut c_char,
+) -> *mut KestrelRun {
+    // SAFETY: out_error follows the C contract.
+    unsafe { clear_error(error) };
+    let result = ffi_catch(|| {
+        // SAFETY: agent follows the C contract.
+        let agent = unsafe { agent_ref(agent) }?;
+        start_run(
+            agent,
+            RunRequest::Resume {
+                retry_uncertain_tools: retry_uncertain_tools != 0,
+            },
+        )
     });
     match result {
         Ok(run) => Box::into_raw(Box::new(run)),

@@ -204,6 +204,15 @@ char *kestrel_agent_run_message(
     const char *message_json,
     char **error);
 
+/*
+ * Resumes an interrupted run. retry_uncertain_tools non-zero permits re-running
+ * a tool whose result was not checkpointed.
+ */
+char *kestrel_agent_resume(
+    KestrelAgent *agent,
+    int32_t retry_uncertain_tools,
+    char **error);
+
 /* Starts a nonblocking run. Event callbacks still receive events. */
 KestrelRun *kestrel_agent_start_run(
     KestrelAgent *agent,
@@ -213,6 +222,12 @@ KestrelRun *kestrel_agent_start_run(
 KestrelRun *kestrel_agent_start_run_message(
     KestrelAgent *agent,
     const char *message_json,
+    char **error);
+
+/* Starts a nonblocking resume from the persisted checkpoint. */
+KestrelRun *kestrel_agent_start_resume(
+    KestrelAgent *agent,
+    int32_t retry_uncertain_tools,
     char **error);
 
 /*

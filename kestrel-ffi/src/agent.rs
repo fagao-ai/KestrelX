@@ -8,7 +8,8 @@ use std::{
 };
 
 use kestrel::{
-    Agent, AgentOutput, Memory, Message, Model, RunOptions, Session, SessionStore, TodoList,
+    Agent, AgentOutput, Memory, Message, Model, ResumeOptions, RunOptions, Session, SessionStore,
+    TodoList,
 };
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -59,6 +60,19 @@ impl KestrelAgent {
         block_on(
             self.inner
                 .run_with(message, RunOptions::default().with_cancellation(token)),
+        )?
+        .map_err(|error| error.to_string())
+    }
+
+    fn resume_output(&self, retry_uncertain_tools: bool) -> Result<AgentOutput, String> {
+        let token = CancellationToken::new();
+        let _guard = self.begin_run(token.clone())?;
+        block_on(
+            self.inner.resume_with(
+                ResumeOptions::default()
+                    .with_cancellation(token)
+                    .with_uncertain_tool_retry(retry_uncertain_tools),
+            ),
         )?
         .map_err(|error| error.to_string())
     }
@@ -381,6 +395,40 @@ pub unsafe extern "C" fn kestrel_agent_run_message(
         let message: Message = serde_json::from_str(&message_json)
             .map_err(|error| format!("invalid message JSON: {error}"))?;
         let output = agent.run_message(message)?;
+        serde_json::to_string(&output)
+            .map_err(|error| format!("failed to serialize output: {error}"))
+    });
+
+    match result {
+        Ok(json) => into_c_string(json),
+        Err(error_message) => {
+            // SAFETY: out_error follows the C contract.
+            unsafe { set_error(error, error_message) };
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Resumes an interrupted run synchronously.
+///
+/// `retry_uncertain_tools` must be non-zero to re-run a tool whose result was
+/// not checkpointed.
+///
+/// # Safety
+///
+/// Pointers follow the C contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kestrel_agent_resume(
+    agent: *mut KestrelAgent,
+    retry_uncertain_tools: c_int,
+    error: *mut *mut c_char,
+) -> *mut c_char {
+    // SAFETY: out_error follows the C contract.
+    unsafe { clear_error(error) };
+    let result = ffi_catch(|| {
+        // SAFETY: arguments follow the C contract.
+        let agent = unsafe { agent_ref(agent) }?;
+        let output = agent.resume_output(retry_uncertain_tools != 0)?;
         serde_json::to_string(&output)
             .map_err(|error| format!("failed to serialize output: {error}"))
     });

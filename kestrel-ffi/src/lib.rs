@@ -22,8 +22,9 @@ mod tools;
 pub use agent::{
     KestrelAgent, kestrel_agent_cancel, kestrel_agent_delete_session, kestrel_agent_free,
     kestrel_agent_new, kestrel_agent_new_with_model, kestrel_agent_new_with_streaming_model,
-    kestrel_agent_register_tool, kestrel_agent_reset, kestrel_agent_run, kestrel_agent_run_message,
-    kestrel_agent_session_json, kestrel_agent_set_event_callback, kestrel_agent_todos_json,
+    kestrel_agent_register_tool, kestrel_agent_reset, kestrel_agent_resume, kestrel_agent_run,
+    kestrel_agent_run_message, kestrel_agent_session_json, kestrel_agent_set_event_callback,
+    kestrel_agent_todos_json,
 };
 pub use builder::{
     KestrelAgentBuilder, kestrel_agent_builder_build, kestrel_agent_builder_free,
@@ -38,8 +39,9 @@ pub use callbacks::{
 };
 pub use contract::{kestrel_capabilities_json, kestrel_contract_version, kestrel_validate_config};
 pub use run::{
-    KestrelRun, kestrel_agent_start_run, kestrel_agent_start_run_message, kestrel_run_cancel,
-    kestrel_run_free, kestrel_run_is_done, kestrel_run_next_event, kestrel_run_wait,
+    KestrelRun, kestrel_agent_start_resume, kestrel_agent_start_run,
+    kestrel_agent_start_run_message, kestrel_run_cancel, kestrel_run_free, kestrel_run_is_done,
+    kestrel_run_next_event, kestrel_run_wait,
 };
 pub use strings::{kestrel_string_free, kestrel_string_new};
 
