@@ -199,6 +199,12 @@ def load_library(path: Optional[str] = None) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_void_p),
     ]
     library.kestrel_agent_run_message.restype = ctypes.c_void_p
+    library.kestrel_agent_resume.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_resume.restype = ctypes.c_void_p
     library.kestrel_agent_start_run.argtypes = [
         ctypes.c_void_p,
         ctypes.c_char_p,
@@ -211,6 +217,12 @@ def load_library(path: Optional[str] = None) -> ctypes.CDLL:
         ctypes.POINTER(ctypes.c_void_p),
     ]
     library.kestrel_agent_start_run_message.restype = ctypes.c_void_p
+    library.kestrel_agent_start_resume.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.kestrel_agent_start_resume.restype = ctypes.c_void_p
     library.kestrel_run_next_event.argtypes = [
         ctypes.c_void_p,
         ctypes.c_int32,
@@ -454,6 +466,18 @@ class Agent:
             json.dumps(message).encode(),
         )
 
+    def resume(self, retry_uncertain_tools: bool = False) -> dict[str, Any]:
+        """Resumes the session's interrupted run."""
+        error = ctypes.c_void_p()
+        pointer = self._lib.kestrel_agent_resume(
+            self._handle,
+            1 if retry_uncertain_tools else 0,
+            ctypes.byref(error),
+        )
+        if not pointer:
+            raise KestrelError(self._take_error(error))
+        return json.loads(self._take_string(pointer))
+
     def start_run(self, prompt: str) -> "Run":
         """Starts a nonblocking run and returns a pollable Run handle."""
         return self._start_run_call(
@@ -467,6 +491,20 @@ class Agent:
             self._lib.kestrel_agent_start_run_message,
             json.dumps(message).encode(),
         )
+
+    def start_resume(self, retry_uncertain_tools: bool = False) -> "Run":
+        """Starts a nonblocking resume and returns a pollable Run handle."""
+        error = ctypes.c_void_p()
+        pointer = self._lib.kestrel_agent_start_resume(
+            self._handle,
+            1 if retry_uncertain_tools else 0,
+            ctypes.byref(error),
+        )
+        if not pointer:
+            raise KestrelError(self._take_error(error))
+        run = Run(self, pointer)
+        self._runs.append(run)
+        return run
 
     def cancel(self) -> None:
         """Requests cancellation of the active run."""
