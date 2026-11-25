@@ -3,8 +3,8 @@ mod support;
 use std::{sync::Arc, time::Duration};
 
 use kestrel::{
-    Agent, AgentEventKind, Error, InMemorySessionStore, RunOptions, SessionStore, ToolOutput,
-    ToolSpec, event_channel, function_tool,
+    Agent, AgentEventKind, Error, InMemorySessionStore, Message, ResumeOptions, RunCheckpoint,
+    RunOptions, Session, SessionStore, ToolOutput, ToolSpec, Usage, event_channel, function_tool,
 };
 use serde_json::json;
 use support::{
@@ -330,4 +330,131 @@ async fn deletes_persisted_sessions_without_stale_reload() {
     assert!(texts.contains(&"fresh start".to_owned()));
     assert!(!texts.contains(&"remember this".to_owned()));
     assert!(!texts.contains(&"before delete".to_owned()));
+}
+
+#[tokio::test]
+async fn resumes_an_interrupted_model_call_from_the_store() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let blocking = BlockingModel::new();
+    let started = blocking.started();
+    let first = Agent::builder(blocking)
+        .session_store(store.clone())
+        .session_id("resume-model")
+        .build()
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let run = {
+        let agent = first.clone();
+        let token = cancellation.clone();
+        tokio::spawn(async move {
+            agent
+                .run_with(
+                    "finish this",
+                    RunOptions::default().with_cancellation(token),
+                )
+                .await
+        })
+    };
+    started.notified().await;
+    cancellation.cancel();
+    assert!(matches!(run.await.unwrap(), Err(Error::Cancelled)));
+
+    let saved = store.require("resume-model").await.unwrap();
+    let checkpoint = saved.active_run.expect("active run checkpoint");
+    assert!(matches!(&checkpoint.phase, kestrel::RunPhase::ModelCall));
+    assert_eq!(saved.messages.len(), 1);
+
+    let model = Arc::new(ScriptedModel::new([text_response("resumed")]));
+    let second = Agent::builder(model.clone())
+        .session_store(store.clone())
+        .session_id("resume-model")
+        .build()
+        .unwrap();
+    let output = second.resume().await.unwrap();
+    assert_eq!(output.run_id, checkpoint.run_id);
+    assert_eq!(output.text, "resumed");
+    assert_eq!(output.turns, 1);
+    assert_eq!(model.requests().len(), 1);
+
+    let saved = store.require("resume-model").await.unwrap();
+    assert!(saved.active_run.is_none());
+    assert_eq!(saved.messages.len(), 2);
+    assert!(saved.revision > 0);
+}
+
+#[tokio::test]
+async fn resumes_from_a_safe_tool_checkpoint() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut session = Session::with_id("resume-tools");
+    session.push(Message::user("use the tool"));
+    let assistant = Message::assistant_with_tool_calls(
+        "",
+        vec![call("call-1", "echo", json!({ "text": "hello" }))],
+    );
+    session.active_run = Some(RunCheckpoint::tools(
+        "run-tools",
+        1,
+        Usage::default(),
+        assistant,
+    ));
+    session.touch();
+    store.save(&session).await.unwrap();
+
+    let model = Arc::new(ScriptedModel::new([text_response("tool complete")]));
+    let agent = Agent::builder(model.clone())
+        .tool(echo_tool())
+        .session_store(store.clone())
+        .session_id("resume-tools")
+        .build()
+        .unwrap();
+    assert!(matches!(
+        agent.run("new prompt").await,
+        Err(Error::ActiveRun(run_id)) if run_id == "run-tools"
+    ));
+
+    let output = agent.resume().await.unwrap();
+    assert_eq!(output.text, "tool complete");
+    assert_eq!(output.turns, 2);
+    assert_eq!(model.requests()[0].messages.last().unwrap().text(), "hello");
+
+    let saved = store.require("resume-tools").await.unwrap();
+    assert!(saved.active_run.is_none());
+    assert_eq!(saved.messages.len(), 4);
+}
+
+#[tokio::test]
+async fn refuses_to_replay_an_uncertain_tool_without_opt_in() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut session = Session::with_id("resume-unsafe-tool");
+    session.push(Message::user("use the tool"));
+    let assistant = Message::assistant_with_tool_calls(
+        "",
+        vec![call("call-1", "echo", json!({ "text": "hello" }))],
+    );
+    let mut checkpoint = RunCheckpoint::tools("run-unsafe", 1, Usage::default(), assistant);
+    checkpoint.mark_tool_started();
+    session.active_run = Some(checkpoint);
+    session.touch();
+    store.save(&session).await.unwrap();
+
+    let model = Arc::new(ScriptedModel::new([text_response("retried")]));
+    let agent = Agent::builder(model.clone())
+        .tool(echo_tool())
+        .session_store(store)
+        .session_id("resume-unsafe-tool")
+        .build()
+        .unwrap();
+
+    assert!(matches!(
+        agent.resume().await,
+        Err(Error::UnsafeResume { tool, call_id })
+            if tool == "echo" && call_id == "call-1"
+    ));
+    assert!(model.requests().is_empty());
+
+    let output = agent
+        .resume_with(ResumeOptions::default().with_uncertain_tool_retry(true))
+        .await
+        .unwrap();
+    assert_eq!(output.text, "retried");
 }

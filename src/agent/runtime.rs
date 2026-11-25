@@ -11,7 +11,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     Agent, AgentEvent, AgentEventKind, AgentOutput, CompressionRequest, Error, EventSink,
-    MemoryQuery, Message, ModelRequest, Result, Role, ToolCall, ToolContext, ToolOutput, Usage,
+    MemoryQuery, Message, ModelRequest, Result, Role, RunCheckpoint, RunPhase,
+    SESSION_SCHEMA_VERSION, ToolCall, ToolContext, ToolOutput, Usage,
 };
 
 impl Agent {
@@ -39,11 +40,24 @@ impl Agent {
             _ = cancellation.cancelled() => return Err(Error::Cancelled),
             guard = self.state.run_lock.lock() => guard,
         };
+        self.ensure_loaded().await?;
+        if let Some(active) = self.state.session.read().await.active_run.clone() {
+            return Err(Error::ActiveRun(active.run_id));
+        }
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let checkpoint = RunCheckpoint::model_call(run_id.clone(), 1, Usage::default());
+        self.update_session(|session| {
+            session.messages.push(input);
+            session.active_run = Some(checkpoint.clone());
+            Ok(())
+        })
+        .await?;
+
         let sink = options
             .event_sink
             .clone()
             .or_else(|| self.state.event_sink.clone());
-        let run_id = uuid::Uuid::new_v4().to_string();
         let session_id = self.session_id().await;
         let events = EventContext {
             sink,
@@ -53,24 +67,67 @@ impl Agent {
         };
         events.emit(AgentEventKind::RunStarted);
 
-        let result = self.execute_run(input, &cancellation, &events).await;
-        let persist_result = self.persist_session().await;
-        let result = match (result, persist_result) {
-            (Ok(output), Ok(())) => Ok(output),
-            (Ok(_), Err(error)) => Err(error),
-            (Err(error), _) => Err(error),
-        };
+        let result = self
+            .drive_run(checkpoint, &cancellation, &events, false)
+            .await;
+        emit_run_result(&events, &result);
+        result
+    }
 
-        match &result {
-            Ok(output) => events.emit(AgentEventKind::RunCompleted {
-                text: output.text.clone(),
-                turns: output.turns,
-                usage: output.usage,
-            }),
-            Err(error) => events.emit(AgentEventKind::RunFailed {
-                error: error.to_string(),
-            }),
+    /// Resumes an interrupted run from its last safe checkpoint.
+    pub async fn resume(&self) -> Result<AgentOutput> {
+        self.resume_with(Default::default()).await
+    }
+
+    /// Resumes an interrupted run with cancellation and resume options.
+    pub async fn resume_with(&self, options: super::ResumeOptions) -> Result<AgentOutput> {
+        let cancellation = options.cancellation.unwrap_or_default();
+        let _run_guard = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(Error::Cancelled),
+            guard = self.state.run_lock.lock() => guard,
+        };
+        self.ensure_loaded().await?;
+        let checkpoint = self
+            .state
+            .session
+            .read()
+            .await
+            .active_run
+            .clone()
+            .ok_or(Error::NoActiveRun)?;
+        checkpoint.validate()?;
+
+        if checkpoint.tool_started() && !options.retry_uncertain_tools {
+            let call = checkpoint.pending_tool_call().ok_or_else(|| {
+                Error::Protocol("started tool checkpoint has no pending call".to_owned())
+            })?;
+            return Err(Error::UnsafeResume {
+                tool: call.name.clone(),
+                call_id: call.id.clone(),
+            });
         }
+
+        let sink = options
+            .event_sink
+            .clone()
+            .or_else(|| self.state.event_sink.clone());
+        let events = EventContext {
+            sink,
+            run_id: checkpoint.run_id.clone(),
+            session_id: self.session_id().await,
+            sequence: AtomicU64::new(1),
+        };
+        events.emit(AgentEventKind::RunStarted);
+        let result = self
+            .drive_run(
+                checkpoint,
+                &cancellation,
+                &events,
+                options.retry_uncertain_tools,
+            )
+            .await;
+        emit_run_result(&events, &result);
         result
     }
 
@@ -105,102 +162,171 @@ impl Agent {
         Ok(())
     }
 
-    async fn execute_run(
+    async fn drive_run(
         &self,
-        input: Message,
+        mut checkpoint: RunCheckpoint,
         cancellation: &CancellationToken,
         events: &EventContext,
+        retry_uncertain_tools: bool,
     ) -> Result<AgentOutput> {
-        self.ensure_loaded().await?;
-        let query = input.text();
-        let session_id = self.session_id().await;
         let mut history = self.state.session.read().await.messages.clone();
         validate_history(&history)?;
-        history.push(input.clone());
-        self.append_message(input).await;
-
+        let query = history
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User)
+            .map(Message::text)
+            .unwrap_or_default();
+        let session_id = self.session_id().await;
         let memory_context = self.recall_memory(&query, cancellation, events).await?;
-        let mut usage = Usage::default();
+        let mut usage = checkpoint.usage;
+        let run_id = checkpoint.run_id.clone();
 
-        for turn in 1..=self.shared.config.max_turns {
-            check_cancelled(cancellation)?;
-            events.emit(AgentEventKind::TurnStarted { turn });
+        loop {
+            match checkpoint.phase.clone() {
+                RunPhase::Tools {
+                    assistant,
+                    completed_results,
+                    ..
+                } => {
+                    if checkpoint.tool_started() && !retry_uncertain_tools {
+                        let call = checkpoint.pending_tool_call().ok_or_else(|| {
+                            Error::Protocol(
+                                "started tool checkpoint has no pending call".to_owned(),
+                            )
+                        })?;
+                        return Err(Error::UnsafeResume {
+                            tool: call.name.clone(),
+                            call_id: call.id.clone(),
+                        });
+                    }
 
-            let fixed_messages = self.fixed_messages(memory_context.as_deref());
-            let tool_specs = self.shared.tools.specs();
-            history = self
-                .prepare_context(history, &fixed_messages, &tool_specs, cancellation, events)
-                .await?;
+                    let turn = checkpoint.turn;
+                    let mut results = completed_results;
+                    while results.len() < assistant.tool_calls.len() {
+                        check_cancelled(cancellation)?;
+                        let call = assistant.tool_calls[results.len()].clone();
+                        checkpoint.mark_tool_started();
+                        self.persist_checkpoint(&checkpoint).await?;
 
-            let mut messages = fixed_messages;
-            messages.extend(history.iter().cloned());
-            let request = ModelRequest {
-                messages,
-                tools: tool_specs,
-                tool_choice: self.shared.config.tool_choice.clone(),
-                temperature: self.shared.config.temperature,
-                max_tokens: self.shared.config.max_output_tokens,
-            };
-            let response = if self.shared.config.streaming {
-                let on_delta = |delta| {
-                    events.emit(AgentEventKind::ModelDelta { turn, delta });
-                };
-                cancellable(
-                    cancellation,
-                    self.shared.model.complete_stream(request, &on_delta),
-                )
-                .await?
-            } else {
-                cancellable(cancellation, self.shared.model.complete(request)).await?
-            };
-            check_cancelled(cancellation)?;
-            validate_response(&response.message)?;
+                        let output = self.execute_tool(turn, &call, cancellation, events).await?;
+                        let content = tool_content(&output);
+                        let result = Message::tool_result(call.id.clone(), content)
+                            .with_name(call.name.clone());
+                        checkpoint.push_tool_result(result.clone());
+                        self.persist_checkpoint(&checkpoint).await?;
+                        events.emit(AgentEventKind::ToolCompleted {
+                            turn,
+                            call_id: call.id.clone(),
+                            name: call.name.clone(),
+                            output,
+                        });
+                        results.push(result);
+                    }
 
-            usage += response.usage;
-            events.emit(AgentEventKind::ModelCompleted {
-                turn,
-                usage: response.usage,
-                finish_reason: response.finish_reason.clone(),
-            });
+                    history.push(assistant);
+                    history.extend(results);
+                    let next_turn = checkpoint.turn.saturating_add(1);
+                    if next_turn > self.shared.config.max_turns {
+                        return Err(Error::TurnLimit(self.shared.config.max_turns));
+                    }
+                    checkpoint =
+                        RunCheckpoint::model_call(run_id.clone(), next_turn, checkpoint.usage);
+                    self.update_session(|session| {
+                        session.messages = history.clone();
+                        session.active_run = Some(checkpoint.clone());
+                        Ok(())
+                    })
+                    .await?;
+                }
+                RunPhase::ModelCall => {
+                    let turn = checkpoint.turn;
+                    if turn > self.shared.config.max_turns {
+                        return Err(Error::TurnLimit(self.shared.config.max_turns));
+                    }
+                    check_cancelled(cancellation)?;
+                    events.emit(AgentEventKind::TurnStarted { turn });
 
-            let assistant = response.message;
-            history.push(assistant.clone());
+                    let fixed_messages = self.fixed_messages(memory_context.as_deref());
+                    let tool_specs = self.shared.tools.specs();
+                    history = self
+                        .prepare_context(
+                            history,
+                            &fixed_messages,
+                            &tool_specs,
+                            cancellation,
+                            events,
+                        )
+                        .await?;
+                    self.update_session(|session| {
+                        session.messages = history.clone();
+                        session.active_run = Some(checkpoint.clone());
+                        Ok(())
+                    })
+                    .await?;
 
-            if assistant.tool_calls.is_empty() {
-                self.replace_history(&history).await;
-                return Ok(AgentOutput {
-                    run_id: events.run_id.clone(),
-                    session_id,
-                    text: assistant.text(),
-                    message: assistant,
-                    turns: turn,
-                    usage,
-                    finish_reason: response.finish_reason,
-                });
+                    let mut messages = fixed_messages;
+                    messages.extend(history.iter().cloned());
+                    let request = ModelRequest {
+                        messages,
+                        tools: tool_specs,
+                        tool_choice: self.shared.config.tool_choice.clone(),
+                        temperature: self.shared.config.temperature,
+                        max_tokens: self.shared.config.max_output_tokens,
+                    };
+                    let response = if self.shared.config.streaming {
+                        let on_delta = |delta| {
+                            events.emit(AgentEventKind::ModelDelta { turn, delta });
+                        };
+                        cancellable(
+                            cancellation,
+                            self.shared.model.complete_stream(request, &on_delta),
+                        )
+                        .await?
+                    } else {
+                        cancellable(cancellation, self.shared.model.complete(request)).await?
+                    };
+                    check_cancelled(cancellation)?;
+                    validate_response(&response.message)?;
+
+                    usage += response.usage;
+                    events.emit(AgentEventKind::ModelCompleted {
+                        turn,
+                        usage: response.usage,
+                        finish_reason: response.finish_reason.clone(),
+                    });
+
+                    let assistant = response.message;
+                    if assistant.tool_calls.is_empty() {
+                        history.push(assistant.clone());
+                        let output = AgentOutput {
+                            run_id: events.run_id.clone(),
+                            session_id: session_id.clone(),
+                            text: assistant.text(),
+                            message: assistant,
+                            turns: turn,
+                            usage,
+                            finish_reason: response.finish_reason,
+                        };
+                        self.update_session(|session| {
+                            session.messages = history.clone();
+                            session.active_run = None;
+                            Ok(())
+                        })
+                        .await?;
+                        return Ok(output);
+                    }
+
+                    checkpoint = RunCheckpoint::tools(run_id.clone(), turn, usage, assistant);
+                    self.update_session(|session| {
+                        session.messages = history.clone();
+                        session.active_run = Some(checkpoint.clone());
+                        Ok(())
+                    })
+                    .await?;
+                }
             }
-
-            for call in &assistant.tool_calls {
-                check_cancelled(cancellation)?;
-                let output = self.execute_tool(turn, call, cancellation, events).await?;
-                let content = match (output.content.is_empty(), output.is_error) {
-                    (true, _) => "(tool returned no output)".to_owned(),
-                    (false, true) => format!("Tool error: {}", output.content),
-                    (false, false) => output.content.clone(),
-                };
-                history.push(
-                    Message::tool_result(call.id.clone(), content).with_name(call.name.clone()),
-                );
-                events.emit(AgentEventKind::ToolCompleted {
-                    turn,
-                    call_id: call.id.clone(),
-                    name: call.name.clone(),
-                    output,
-                });
-            }
-            self.replace_history(&history).await;
         }
-
-        Err(Error::TurnLimit(self.shared.config.max_turns))
     }
 
     async fn execute_tool(
@@ -301,7 +427,6 @@ impl Agent {
             )));
         }
 
-        self.replace_history(&compression.messages).await;
         Ok(compression.messages)
     }
 
@@ -413,20 +538,42 @@ impl Agent {
                     session.id
                 )));
             }
+            if session.schema_version != SESSION_SCHEMA_VERSION {
+                return Err(Error::UnsupportedSessionVersion {
+                    found: session.schema_version,
+                    supported: SESSION_SCHEMA_VERSION,
+                });
+            }
+            if let Some(checkpoint) = &session.active_run {
+                checkpoint.validate()?;
+            }
             *self.state.session.write().await = session;
         }
         self.state.loaded.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn append_message(&self, message: Message) {
-        self.state.session.write().await.push(message);
+    async fn persist_checkpoint(&self, checkpoint: &RunCheckpoint) -> Result<()> {
+        self.update_session(|session| {
+            session.active_run = Some(checkpoint.clone());
+            Ok(())
+        })
+        .await
+        .map(|_| ())
     }
 
-    async fn replace_history(&self, messages: &[Message]) {
-        let mut session = self.state.session.write().await;
-        session.messages = messages.to_vec();
-        session.updated_at_ms = crate::util::now_ms();
+    async fn update_session(
+        &self,
+        update: impl FnOnce(&mut crate::Session) -> Result<()>,
+    ) -> Result<crate::Session> {
+        let mut session = self.state.session.read().await.clone();
+        update(&mut session)?;
+        session.touch();
+        if let Some(store) = &self.state.session_store {
+            store.save(&session).await?;
+        }
+        *self.state.session.write().await = session.clone();
+        Ok(session)
     }
 
     async fn persist_session(&self) -> Result<()> {
@@ -440,6 +587,27 @@ impl Agent {
         };
         let session = self.state.session.read().await.clone();
         store.save(&session).await
+    }
+}
+
+fn tool_content(output: &ToolOutput) -> String {
+    match (output.content.is_empty(), output.is_error) {
+        (true, _) => "(tool returned no output)".to_owned(),
+        (false, true) => format!("Tool error: {}", output.content),
+        (false, false) => output.content.clone(),
+    }
+}
+
+fn emit_run_result(events: &EventContext, result: &Result<AgentOutput>) {
+    match result {
+        Ok(output) => events.emit(AgentEventKind::RunCompleted {
+            text: output.text.clone(),
+            turns: output.turns,
+            usage: output.usage,
+        }),
+        Err(error) => events.emit(AgentEventKind::RunFailed {
+            error: error.to_string(),
+        }),
     }
 }
 

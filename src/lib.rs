@@ -52,7 +52,9 @@ mod subagent;
 #[cfg(feature = "todo")]
 mod todo;
 
-pub use agent::{Agent, AgentBuilder, AgentConfig, AgentOutput, AgentTemplate, RunOptions};
+pub use agent::{
+    Agent, AgentBuilder, AgentConfig, AgentOutput, AgentTemplate, ResumeOptions, RunOptions,
+};
 pub use context::{
     Compression, CompressionRequest, ContextCompressor, HeuristicTokenCounter,
     SlidingWindowCompressor, SummarizingCompressor, TokenCounter,

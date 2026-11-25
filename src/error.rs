@@ -46,6 +46,34 @@ pub enum Error {
     #[error("session `{0}` not found")]
     SessionNotFound(String),
 
+    /// The session contains an interrupted run that must be resumed or reset.
+    #[error("session has active run `{0}`; call resume() or reset() first")]
+    ActiveRun(String),
+
+    /// There is no interrupted run to resume.
+    #[error("session has no active run to resume")]
+    NoActiveRun,
+
+    /// A tool call was started but its result was not checkpointed.
+    #[error(
+        "cannot safely resume tool `{tool}` (call `{call_id}`) because it may have already run"
+    )]
+    UnsafeResume {
+        /// Tool name.
+        tool: String,
+        /// Tool call identifier.
+        call_id: String,
+    },
+
+    /// A persisted session uses an unsupported schema version.
+    #[error("unsupported session schema version {found}; supported version is {supported}")]
+    UnsupportedSessionVersion {
+        /// Version found in storage.
+        found: u32,
+        /// Version supported by this binary.
+        supported: u32,
+    },
+
     /// Long-term memory failed.
     #[error("memory error: {0}")]
     Memory(String),

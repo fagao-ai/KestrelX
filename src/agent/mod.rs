@@ -85,6 +85,48 @@ impl RunOptions {
     }
 }
 
+/// Per-resume options.
+#[derive(Clone, Default)]
+pub struct ResumeOptions {
+    /// Cooperative cancellation token.
+    pub cancellation: Option<CancellationToken>,
+    /// Overrides the agent's default event sink for this resume.
+    pub event_sink: Option<Arc<dyn EventSink>>,
+    /// Re-run a tool that was started but whose result was not checkpointed.
+    pub retry_uncertain_tools: bool,
+}
+
+impl std::fmt::Debug for ResumeOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResumeOptions")
+            .field("cancellation", &self.cancellation)
+            .field("has_event_sink", &self.event_sink.is_some())
+            .field("retry_uncertain_tools", &self.retry_uncertain_tools)
+            .finish()
+    }
+}
+
+impl ResumeOptions {
+    /// Sets the cancellation token.
+    pub fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    /// Sets an event sink for this resume.
+    pub fn with_event_sink(mut self, sink: Arc<dyn EventSink>) -> Self {
+        self.event_sink = Some(sink);
+        self
+    }
+
+    /// Allows re-running a tool whose result was not checkpointed.
+    pub fn with_uncertain_tool_retry(mut self, enabled: bool) -> Self {
+        self.retry_uncertain_tools = enabled;
+        self
+    }
+}
+
 /// Final result of one agent run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentOutput {
@@ -215,6 +257,11 @@ impl Agent {
     /// Returns a snapshot of the current history.
     pub async fn messages(&self) -> Vec<Message> {
         self.state.session.read().await.messages.clone()
+    }
+
+    /// Returns the interrupted run checkpoint, if any.
+    pub async fn active_run(&self) -> Option<crate::RunCheckpoint> {
+        self.state.session.read().await.active_run.clone()
     }
 
     /// Creates an isolated blueprint from this agent.
