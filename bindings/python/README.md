@@ -52,6 +52,9 @@ Objects follow the same protocols as the Rust traits:
 - session store: `load(id) -> dict | None`, `save(session)`, optional `delete(id)`
 - memory: `recall(query) -> list[dict]`, `remember(entry)`
 
+Memory queries include `categories`, and entries may include
+`category: {"name": "project", "owner_id": "..."}`.
+
 Use `agent.reset()` to clear history while preserving the session ID, or
 `agent.delete_session()` to remove the stored session as well.
 

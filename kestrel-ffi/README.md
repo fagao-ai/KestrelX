@@ -72,7 +72,13 @@ also be freed with `kestrel_string_free`.
     "tools": true,
     "auto_recall": true,
     "recall_limit": 5,
-    "max_context_tokens": 2000
+    "max_context_tokens": 2000,
+    "read_categories": [
+      { "name": "project", "owner_id": "kestrel" },
+      { "name": "user", "owner_id": "alice" },
+      { "name": "global" }
+    ],
+    "write_category": { "name": "project", "owner_id": "kestrel" }
   },
   "compression": {
     "kind": "sliding",

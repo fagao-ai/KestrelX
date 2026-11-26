@@ -189,9 +189,22 @@ let agent = Agent::builder(model)
     .session_store(sessions)
     .session_id("user-42")
     .memory(memory)
+    .memory_options(MemoryOptions {
+        read_categories: vec![
+            MemoryCategory::project("kestrel"),
+            MemoryCategory::user("alice"),
+            MemoryCategory::global(),
+        ],
+        write_category: Some(MemoryCategory::project("kestrel")),
+        ..Default::default()
+    })
     .with_memory_tools()
     .build()?;
 ```
+
+`MemoryCategory` 只是 `name + owner_id`，core 不解释 `user`、`project`、`global`
+等名称。召回只搜索 `read_categories`；内置 `memory_remember` 写入 `write_category`。
+空分类列表保持旧行为：搜索所有分类。`global` 不放进写分类时就是只读公共记忆。
 
 接入数据库时实现 `SessionStore` / `Memory` 即可。核心只提供 `InMemorySessionStore`
 和 `InMemoryMemory`，不绑定数据库依赖，也不负责第三方 schema migration。
@@ -460,7 +473,16 @@ cargo build -p kestrel-ffi --release
   "max_tool_output_chars": 20000,
   "tool_concurrency": "serial",
   "todo": true,
-  "memory": { "enabled": true, "tools": true },
+  "memory": {
+    "enabled": true,
+    "tools": true,
+    "read_categories": [
+      { "name": "project", "owner_id": "kestrel" },
+      { "name": "user", "owner_id": "alice" },
+      { "name": "global" }
+    ],
+    "write_category": { "name": "project", "owner_id": "kestrel" }
+  },
   "compression": { "kind": "sliding", "max_tokens": 80000 },
   "skills": { "paths": ["./skills"], "max_depth": 4 },
   "mcp_servers": [

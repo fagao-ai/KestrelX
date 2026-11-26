@@ -158,7 +158,9 @@ const agent = createAgent(config, {
     delete: async (id) => database.delete(id),
   },
   memory: {
-    recall: async (query) => database.recall(query), // array of entries
+    // query.categories contains the configured read categories.
+    // Entries may include { id, text, tags, category: { name, owner_id } }.
+    recall: async (query) => database.recall(query),
     remember: async (entry) => database.remember(entry),
   },
 });
