@@ -175,6 +175,83 @@ async fn can_fail_fast_on_tool_errors() {
 }
 
 #[tokio::test]
+async fn tool_timeouts_are_recoverable() {
+    let slow = function_tool(
+        ToolSpec::new("slow", "Wait too long", object_schema()),
+        |_arguments, _context| async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok(ToolOutput::new("late"))
+        },
+    );
+    let model = Arc::new(ScriptedModel::new([
+        tool_response(vec![call("call_1", "slow", json!({}))]),
+        text_response("recovered from timeout"),
+    ]));
+    let agent = Agent::builder(model.clone())
+        .tool(slow)
+        .tool_timeout_ms(Some(5))
+        .build()
+        .unwrap();
+
+    let output = agent.run("try").await.unwrap();
+    assert_eq!(output.text, "recovered from timeout");
+    let requests = model.requests();
+    let tool_result = requests[1].messages.last().unwrap();
+    assert!(tool_result.text().contains("timed out after 5 ms"));
+}
+
+#[tokio::test]
+async fn fail_on_tool_error_includes_timeouts() {
+    let slow = function_tool(
+        ToolSpec::new("slow", "Wait too long", object_schema()),
+        |_arguments, _context| async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok(ToolOutput::new("late"))
+        },
+    );
+    let model = Arc::new(ScriptedModel::new([tool_response(vec![call(
+        "call_1",
+        "slow",
+        json!({}),
+    )])]));
+    let agent = Agent::builder(model)
+        .tool(slow)
+        .tool_timeout_ms(Some(5))
+        .fail_on_tool_error(true)
+        .build()
+        .unwrap();
+
+    assert!(matches!(
+        agent.run("try").await,
+        Err(Error::ToolTimeout { tool, timeout_ms })
+            if tool == "slow" && timeout_ms == 5
+    ));
+}
+
+#[tokio::test]
+async fn truncates_large_tool_outputs() {
+    let long = function_tool(
+        ToolSpec::new("long", "Return a long result", object_schema()),
+        |_arguments, _context| async move { Ok(ToolOutput::new("abcdefghijklmnopqrstuvwxyz")) },
+    );
+    let model = Arc::new(ScriptedModel::new([
+        tool_response(vec![call("call_1", "long", json!({}))]),
+        text_response("truncated"),
+    ]));
+    let agent = Agent::builder(model.clone())
+        .tool(long)
+        .max_tool_output_chars(Some(10))
+        .build()
+        .unwrap();
+
+    agent.run("try").await.unwrap();
+    let result = model.requests()[1].messages.last().unwrap().text();
+    assert!(result.starts_with("abcdefghij"));
+    assert!(result.contains("truncated 16 chars"));
+    assert!(!result.contains("uvwxyz"));
+}
+
+#[tokio::test]
 async fn enforces_turn_limit() {
     let model = Arc::new(ScriptedModel::new([tool_response(vec![call(
         "call_1",

@@ -30,6 +30,15 @@ pub enum Error {
         message: String,
     },
 
+    /// A tool exceeded its execution timeout.
+    #[error("tool `{tool}` timed out after {timeout_ms} ms")]
+    ToolTimeout {
+        /// Tool name.
+        tool: String,
+        /// Configured timeout in milliseconds.
+        timeout_ms: u64,
+    },
+
     /// The model requested a tool that is not registered.
     #[error("unknown tool `{0}`")]
     UnknownTool(String),

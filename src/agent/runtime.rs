@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use tokio_util::sync::CancellationToken;
@@ -370,7 +371,15 @@ impl Agent {
     #[tracing::instrument(
         name = "tool.call",
         skip_all,
-        fields(turn, tool = %call.name, call_id = %call.id),
+        fields(
+            turn,
+            tool = %call.name,
+            call_id = %call.id,
+            timeout_ms = ?self.shared.config.tool_timeout_ms,
+            timed_out = tracing::field::Empty,
+            truncated = tracing::field::Empty,
+            output_chars = tracing::field::Empty
+        ),
         err
     )]
     async fn execute_tool(
@@ -405,15 +414,42 @@ impl Agent {
             self.state.depth,
             cancellation.clone(),
         );
-        let result = cancellable(cancellation, tool.call(call.arguments.clone(), &context)).await;
-        match result {
-            Ok(output) => Ok(output),
-            Err(error) if error.is_cancelled() || cancellation.is_cancelled() => {
-                Err(Error::Cancelled)
+        let mut timed_out = false;
+        let result = if let Some(timeout_ms) = self.shared.config.tool_timeout_ms {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => Err(Error::Cancelled),
+                result = tokio::time::timeout(
+                    Duration::from_millis(timeout_ms),
+                    tool.call(call.arguments.clone(), &context),
+                ) => match result {
+                    Ok(result) => result,
+                    Err(_) => {
+                        timed_out = true;
+                        Err(Error::ToolTimeout {
+                            tool: call.name.clone(),
+                            timeout_ms,
+                        })
+                    }
+                }
             }
-            Err(error) if self.shared.config.fail_on_tool_error => Err(error),
-            Err(error) => Ok(ToolOutput::error(error.to_string())),
-        }
+        } else {
+            cancellable(cancellation, tool.call(call.arguments.clone(), &context)).await
+        };
+        tracing::Span::current().record("timed_out", timed_out);
+        let output = match result {
+            Ok(output) => output,
+            Err(error) if error.is_cancelled() || cancellation.is_cancelled() => {
+                return Err(Error::Cancelled);
+            }
+            Err(error) if self.shared.config.fail_on_tool_error => return Err(error),
+            Err(error) => ToolOutput::error(error.to_string()),
+        };
+        let (output, truncated) =
+            truncate_tool_output(output, self.shared.config.max_tool_output_chars);
+        tracing::Span::current().record("truncated", truncated);
+        tracing::Span::current().record("output_chars", output.content.chars().count());
+        Ok(output)
     }
 
     async fn prepare_context(
@@ -690,6 +726,21 @@ fn tool_content(output: &ToolOutput) -> String {
         (false, true) => format!("Tool error: {}", output.content),
         (false, false) => output.content.clone(),
     }
+}
+
+fn truncate_tool_output(mut output: ToolOutput, max_chars: Option<usize>) -> (ToolOutput, bool) {
+    let Some(max_chars) = max_chars else {
+        return (output, false);
+    };
+    let total_chars = output.content.chars().count();
+    if total_chars <= max_chars {
+        return (output, false);
+    }
+    let removed = total_chars.saturating_sub(max_chars);
+    let mut content = output.content.chars().take(max_chars).collect::<String>();
+    content.push_str(&format!("\n...[truncated {removed} chars]"));
+    output.content = content;
+    (output, true)
 }
 
 fn emit_run_result(events: &EventContext, result: &Result<AgentOutput>) {
