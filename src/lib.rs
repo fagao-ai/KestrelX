@@ -49,6 +49,8 @@ mod util;
 pub mod mcp;
 #[cfg(feature = "openai")]
 mod openai;
+#[cfg(feature = "openai")]
+mod openai_responses;
 #[cfg(any(feature = "anthropic", feature = "gemini", feature = "openai"))]
 mod provider;
 #[cfg(feature = "skills")]
@@ -82,6 +84,8 @@ pub use tool::{
 
 #[cfg(feature = "openai")]
 pub use openai::{OpenAiCompatible, OpenAiCompatibleBuilder};
+#[cfg(feature = "openai")]
+pub use openai_responses::{OpenAiResponses, OpenAiResponsesBuilder};
 #[cfg(feature = "subagent")]
 pub use subagent::SubAgentTool;
 #[cfg(feature = "todo")]
