@@ -11,7 +11,7 @@ Before the first run, configure a pending trusted publisher:
 
 - PyPI project name: `kestrelx`
 - GitHub owner: `fagao-ai`
-- Repository: `kestrel`
+- Repository: `KestrelX`
 - Workflow: `python-release.yml`
 - Environment: `pypi`
 
