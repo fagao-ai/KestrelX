@@ -3,17 +3,21 @@ use std::{collections::BTreeMap, time::Duration};
 use async_trait::async_trait;
 use reqwest::{
     Client,
-    header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue},
+    header::{AUTHORIZATION, HeaderMap, HeaderValue},
 };
 use serde_json::{Map, Value, json};
 
 use crate::{
     ContentPart, Error, FinishReason, Message, Model, ModelDelta, ModelRequest, ModelResponse,
     Result, Role, ToolSpec, Usage,
-    provider::{ensure_success, json_response, read_sse},
+    provider::{
+        build_http_client, decode_tool_arguments, ensure_success, insert_extra_headers,
+        json_response, read_sse, resolve_endpoint, validate_provider_config,
+    },
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+const MIN_OUTPUT_TOKENS: u32 = 16;
 
 /// An OpenAI Responses API provider.
 #[derive(Clone)]
@@ -57,6 +61,7 @@ impl OpenAiResponses {
         let mut body = Map::new();
         body.insert("model".to_owned(), Value::String(model.to_owned()));
         body.insert("stream".to_owned(), Value::Bool(stream));
+        body.insert("store".to_owned(), Value::Bool(false));
 
         if let Some(instructions) = collect_instructions(&request.messages) {
             body.insert("instructions".to_owned(), Value::String(instructions));
@@ -80,7 +85,10 @@ impl OpenAiResponses {
             body.insert("temperature".to_owned(), json!(temperature));
         }
         if let Some(max_tokens) = request.max_tokens {
-            body.insert("max_output_tokens".to_owned(), json!(max_tokens));
+            body.insert(
+                "max_output_tokens".to_owned(),
+                json!(max_tokens.max(MIN_OUTPUT_TOKENS)),
+            );
         }
         Value::Object(body)
     }
@@ -172,14 +180,7 @@ impl OpenAiResponsesBuilder {
 
     /// Builds the provider.
     pub fn build(self) -> Result<OpenAiResponses> {
-        if self.model.trim().is_empty() {
-            return Err(Error::Configuration(
-                "model name cannot be empty".to_owned(),
-            ));
-        }
-        if self.base_url.trim().is_empty() {
-            return Err(Error::Configuration("base URL cannot be empty".to_owned()));
-        }
+        validate_provider_config(&self.model, &self.base_url)?;
 
         let mut headers = HeaderMap::new();
         if let Some(api_key) = self.api_key.filter(|key| !key.trim().is_empty()) {
@@ -187,25 +188,10 @@ impl OpenAiResponsesBuilder {
                 .map_err(|error| Error::Configuration(format!("invalid API key: {error}")))?;
             headers.insert(AUTHORIZATION, value);
         }
-        for (name, value) in self.headers {
-            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
-                Error::Configuration(format!("invalid HTTP header name `{name}`: {error}"))
-            })?;
-            let value = HeaderValue::from_str(&value)
-                .map_err(|error| Error::Configuration(format!("invalid HTTP header: {error}")))?;
-            headers.insert(name, value);
-        }
+        insert_extra_headers(&mut headers, self.headers)?;
 
-        let client = Client::builder()
-            .default_headers(headers)
-            .timeout(self.timeout)
-            .build()?;
-        let base = self.base_url.trim_end_matches('/');
-        let endpoint = if base.ends_with("/responses") {
-            base.to_owned()
-        } else {
-            format!("{base}/responses")
-        };
+        let client = build_http_client(headers, self.timeout)?;
+        let endpoint = resolve_endpoint(&self.base_url, "/responses", &["/responses"]);
         Ok(OpenAiResponses {
             client,
             model: self.model,
@@ -268,7 +254,8 @@ fn wire_input(messages: &[Message]) -> Vec<Value> {
                         "type": "function_call",
                         "call_id": call.id,
                         "name": call.name,
-                        "arguments": call.arguments.to_string()
+                        "arguments": call.arguments.to_string(),
+                        "status": "completed"
                     }));
                 }
             }
@@ -317,6 +304,16 @@ fn wire_tool_choice(choice: &crate::ToolChoice) -> Value {
 }
 
 fn parse_response(raw: &Value) -> Result<ModelResponse> {
+    if raw.get("status").and_then(Value::as_str) == Some("failed") {
+        let message = raw
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("OpenAI Responses request failed");
+        return Err(Error::Model(message.to_owned()));
+    }
+    if let Some(message) = raw.pointer("/error/message").and_then(Value::as_str) {
+        return Err(Error::Model(message.to_owned()));
+    }
     let output = raw
         .get("output")
         .and_then(Value::as_array)
@@ -346,11 +343,11 @@ fn parse_response(raw: &Value) -> Result<ModelResponse> {
                 }
             }
             Some("function_call") => {
-                let arguments = item
-                    .get("arguments")
-                    .and_then(Value::as_str)
-                    .and_then(|arguments| serde_json::from_str(arguments).ok())
-                    .unwrap_or(Value::Null);
+                let arguments = decode_tool_arguments(
+                    item.get("arguments")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                );
                 tool_calls.push(crate::ToolCall {
                     id: item
                         .get("call_id")
@@ -437,6 +434,7 @@ struct ResponsesStream {
     text: String,
     tool_calls: BTreeMap<usize, AccumulatedToolCall>,
     final_response: Option<Value>,
+    terminal: bool,
 }
 
 impl ResponsesStream {
@@ -448,6 +446,16 @@ impl ResponsesStream {
         let value: Value = serde_json::from_str(data)?;
         match value.get("type").and_then(Value::as_str) {
             Some("response.output_text.delta") => {
+                if let Some(text) = value.get("delta").and_then(Value::as_str)
+                    && !text.is_empty()
+                {
+                    self.text.push_str(text);
+                    on_delta(ModelDelta::Text {
+                        text: text.to_owned(),
+                    });
+                }
+            }
+            Some("response.refusal.delta") => {
                 if let Some(text) = value.get("delta").and_then(Value::as_str)
                     && !text.is_empty()
                 {
@@ -480,6 +488,29 @@ impl ResponsesStream {
                     });
                 }
             }
+            Some("response.function_call_arguments.done") => {
+                let index = value
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default() as usize;
+                let arguments = value
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let call = self.tool_calls.entry(index).or_default();
+                if !arguments.is_empty() && arguments != call.arguments {
+                    let suffix = arguments.strip_prefix(&call.arguments);
+                    call.arguments = arguments.to_owned();
+                    if let Some(suffix) = suffix.filter(|suffix| !suffix.is_empty()) {
+                        on_delta(ModelDelta::ToolCall {
+                            index,
+                            id: None,
+                            name: None,
+                            arguments: Some(suffix.to_owned()),
+                        });
+                    }
+                }
+            }
             Some("response.output_item.done") => {
                 if let Some(item) = value.get("item")
                     && item.get("type").and_then(Value::as_str) == Some("function_call")
@@ -504,24 +535,47 @@ impl ResponsesStream {
                             .unwrap_or_default()
                             .to_owned();
                     }
-                    if call.arguments.is_empty()
-                        && let Some(arguments) = item.get("arguments").and_then(Value::as_str)
+                    if let Some(arguments) = item.get("arguments").and_then(Value::as_str)
+                        && !arguments.is_empty()
                     {
                         call.arguments = arguments.to_owned();
+                    }
+                } else if self.text.is_empty()
+                    && let Some(item) = value.get("item")
+                    && item.get("type").and_then(Value::as_str) == Some("message")
+                {
+                    let text = item
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|part| {
+                            matches!(
+                                part.get("type").and_then(Value::as_str),
+                                Some("output_text" | "refusal" | "text")
+                            )
+                        })
+                        .filter_map(|part| part.get("text").and_then(Value::as_str))
+                        .collect::<String>();
+                    if !text.is_empty() {
+                        self.text = text.clone();
+                        on_delta(ModelDelta::Text { text });
                     }
                 }
             }
             Some("response.completed" | "response.incomplete") => {
+                self.terminal = true;
                 if let Some(response) = value.get("response") {
                     self.final_response = Some(response.clone());
                 }
                 return Ok(true);
             }
-            Some("response.failed" | "response.error") => {
+            Some("response.failed" | "response.error" | "error") => {
                 let message = value
                     .pointer("/response/error/message")
-                    .or_else(|| value.pointer("/error/message"))
                     .and_then(Value::as_str)
+                    .or_else(|| value.pointer("/error/message").and_then(Value::as_str))
+                    .or_else(|| value.get("message").and_then(Value::as_str))
                     .unwrap_or("OpenAI Responses stream failed");
                 return Err(Error::Model(message.to_owned()));
             }
@@ -567,39 +621,43 @@ impl ResponsesStream {
     }
 
     fn finish(self, fallback_model: &str) -> Result<ModelResponse> {
-        if let Some(response) = self.final_response {
-            return parse_response(&response);
+        if !self.terminal {
+            return Err(Error::InvalidModelResponse(
+                "OpenAI Responses stream ended before a terminal event".to_owned(),
+            ));
         }
-        let tool_calls = self
-            .tool_calls
-            .into_values()
-            .map(|call| crate::ToolCall {
-                id: call.id,
-                name: call.name,
-                arguments: serde_json::from_str(&call.arguments)
-                    .unwrap_or(Value::String(call.arguments)),
-            })
-            .collect::<Vec<_>>();
-        Ok(ModelResponse {
-            message: Message {
-                role: Role::Assistant,
-                content: (!self.text.is_empty())
-                    .then_some(vec![ContentPart::text(self.text)])
-                    .unwrap_or_default(),
-                tool_calls: tool_calls.clone(),
-                tool_call_id: None,
-                name: None,
-            },
-            finish_reason: if tool_calls.is_empty() {
-                FinishReason::Stop
-            } else {
-                FinishReason::ToolCalls
-            },
-            usage: Usage::default(),
-            model: Some(fallback_model.to_owned()),
-            raw: None,
-        })
+        let response = self.final_response.ok_or_else(|| {
+            Error::InvalidModelResponse(
+                "OpenAI Responses terminal event contained no response".to_owned(),
+            )
+        })?;
+        let mut parsed = parse_response(&response)?;
+
+        if parsed.message.content.is_empty() && !self.text.is_empty() {
+            parsed.message.content = vec![ContentPart::text(self.text)];
+        }
+        if parsed.message.tool_calls.is_empty() && !self.tool_calls.is_empty() {
+            parsed.message.tool_calls = assembled_tool_calls(self.tool_calls);
+        }
+        if !parsed.message.tool_calls.is_empty() && parsed.finish_reason == FinishReason::Stop {
+            parsed.finish_reason = FinishReason::ToolCalls;
+        }
+        if parsed.model.is_none() {
+            parsed.model = Some(fallback_model.to_owned());
+        }
+        Ok(parsed)
     }
+}
+
+fn assembled_tool_calls(tool_calls: BTreeMap<usize, AccumulatedToolCall>) -> Vec<crate::ToolCall> {
+    tool_calls
+        .into_values()
+        .map(|call| crate::ToolCall {
+            id: call.id,
+            name: call.name,
+            arguments: decode_tool_arguments(&call.arguments),
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -641,10 +699,29 @@ mod tests {
         };
         let body = OpenAiResponses::request_body(&request, "test-model", false);
         assert_eq!(body["instructions"], "Be concise.");
+        assert_eq!(body["store"], false);
         assert_eq!(body["input"][1]["type"], "function_call");
+        assert_eq!(body["input"][1]["status"], "completed");
         assert_eq!(body["input"][2]["type"], "function_call_output");
         assert_eq!(body["tools"][0]["name"], "echo");
         assert_eq!(body["max_output_tokens"], 123);
+    }
+
+    #[test]
+    fn clamps_unsupported_small_output_budgets() {
+        let mut request = ModelRequest {
+            messages: vec![Message::user("hello")],
+            tools: Vec::new(),
+            tool_choice: crate::ToolChoice::Auto,
+            temperature: None,
+            max_tokens: Some(4),
+        };
+        let body = OpenAiResponses::request_body(&request, "test-model", false);
+        assert_eq!(body["max_output_tokens"], 16);
+
+        request.max_tokens = None;
+        let body = OpenAiResponses::request_body(&request, "test-model", false);
+        assert!(body.get("max_output_tokens").is_none());
     }
 
     #[test]
@@ -727,5 +804,41 @@ mod tests {
                 }
             ]
         ));
+    }
+
+    #[test]
+    fn rejects_stream_without_terminal_event() {
+        let on_delta = |_delta| {};
+        let mut stream = ResponsesStream::default();
+        stream
+            .consume(
+                r#"{"type":"response.output_text.delta","delta":"partial"}"#,
+                &on_delta,
+            )
+            .unwrap();
+
+        let error = stream.finish("test").unwrap_err();
+        assert!(error.to_string().contains("terminal event"));
+    }
+
+    #[test]
+    fn falls_back_to_accumulated_tool_call_when_terminal_output_is_empty() {
+        let on_delta = |_delta| {};
+        let mut stream = ResponsesStream::default();
+        for data in [
+            r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call-1","name":"echo"}}"#,
+            r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"text\":\"hi\"}"}"#,
+            r#"{"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":4,"output_tokens":1}}}"#,
+        ] {
+            stream.consume(data, &on_delta).unwrap();
+        }
+
+        let response = stream.finish("test-model").unwrap();
+        assert_eq!(response.message.tool_calls[0].name, "echo");
+        assert_eq!(
+            response.message.tool_calls[0].arguments,
+            json!({"text": "hi"})
+        );
+        assert_eq!(response.finish_reason, FinishReason::ToolCalls);
     }
 }

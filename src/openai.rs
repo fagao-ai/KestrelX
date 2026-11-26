@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, time::Duration};
 use async_trait::async_trait;
 use reqwest::{
     Client,
-    header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue},
+    header::{AUTHORIZATION, HeaderMap, HeaderValue},
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -11,7 +11,10 @@ use serde_json::{Map, Value, json};
 use crate::{
     ContentPart, Error, FinishReason, Message, Model, ModelDelta, ModelRequest, ModelResponse,
     Result, Role, ToolSpec, Usage,
-    provider::{ensure_success, json_response, read_sse},
+    provider::{
+        build_http_client, decode_tool_arguments, ensure_success, insert_extra_headers,
+        json_response, read_sse, resolve_endpoint, validate_provider_config,
+    },
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -129,8 +132,7 @@ impl Model for OpenAiCompatible {
             .map(|call| crate::ToolCall {
                 id: call.id,
                 name: call.function.name,
-                arguments: serde_json::from_str(&call.function.arguments)
-                    .unwrap_or(Value::String(call.function.arguments)),
+                arguments: decode_tool_arguments(&call.function.arguments),
             })
             .collect::<Vec<_>>();
         let message = Message {
@@ -246,14 +248,7 @@ impl OpenAiCompatibleBuilder {
 
     /// Builds the provider.
     pub fn build(self) -> Result<OpenAiCompatible> {
-        if self.model.trim().is_empty() {
-            return Err(Error::Configuration(
-                "model name cannot be empty".to_owned(),
-            ));
-        }
-        if self.base_url.trim().is_empty() {
-            return Err(Error::Configuration("base URL cannot be empty".to_owned()));
-        }
+        validate_provider_config(&self.model, &self.base_url)?;
 
         let mut headers = HeaderMap::new();
         if let Some(api_key) = self.api_key.filter(|key| !key.trim().is_empty()) {
@@ -261,26 +256,11 @@ impl OpenAiCompatibleBuilder {
                 .map_err(|error| Error::Configuration(format!("invalid API key: {error}")))?;
             headers.insert(AUTHORIZATION, value);
         }
-        for (name, value) in self.headers {
-            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
-                Error::Configuration(format!("invalid HTTP header name `{name}`: {error}"))
-            })?;
-            let value = HeaderValue::from_str(&value).map_err(|error| {
-                Error::Configuration(format!("invalid HTTP header value: {error}"))
-            })?;
-            headers.insert(name, value);
-        }
+        insert_extra_headers(&mut headers, self.headers)?;
 
-        let client = Client::builder()
-            .default_headers(headers)
-            .timeout(self.timeout)
-            .build()?;
-        let base = self.base_url.trim_end_matches('/');
-        let endpoint = if base.ends_with("/chat/completions") {
-            base.to_owned()
-        } else {
-            format!("{base}/chat/completions")
-        };
+        let client = build_http_client(headers, self.timeout)?;
+        let endpoint =
+            resolve_endpoint(&self.base_url, "/chat/completions", &["/chat/completions"]);
 
         Ok(OpenAiCompatible {
             client,
@@ -545,8 +525,7 @@ impl StreamAccumulator {
             .map(|call| crate::ToolCall {
                 id: call.id,
                 name: call.name,
-                arguments: serde_json::from_str(&call.arguments)
-                    .unwrap_or(Value::String(call.arguments)),
+                arguments: decode_tool_arguments(&call.arguments),
             })
             .collect::<Vec<_>>();
         let content = if self.text.is_empty() {

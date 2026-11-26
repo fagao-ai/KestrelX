@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use reqwest::{
@@ -10,7 +13,11 @@ use serde_json::{Map, Value, json};
 use crate::{
     ContentPart, Error, FinishReason, Message, Model, ModelDelta, ModelRequest, ModelResponse,
     Result, Role, ToolSpec, Usage,
-    provider::{ensure_success, json_response, read_sse},
+    provider::{
+        build_http_client, ensure_success, insert_extra_headers, json_response,
+        object_tool_arguments, parse_data_url, read_sse, resolve_versioned_endpoint,
+        validate_provider_config,
+    },
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
@@ -194,14 +201,7 @@ impl AnthropicBuilder {
 
     /// Builds the provider.
     pub fn build(self) -> Result<Anthropic> {
-        if self.model.trim().is_empty() {
-            return Err(Error::Configuration(
-                "model name cannot be empty".to_owned(),
-            ));
-        }
-        if self.base_url.trim().is_empty() {
-            return Err(Error::Configuration("base URL cannot be empty".to_owned()));
-        }
+        validate_provider_config(&self.model, &self.base_url)?;
 
         let mut headers = HeaderMap::new();
         if let Some(api_key) = self.api_key.filter(|key| !key.trim().is_empty()) {
@@ -215,25 +215,11 @@ impl AnthropicBuilder {
                 Error::Configuration(format!("invalid Anthropic version: {error}"))
             })?,
         );
-        for (name, value) in self.headers {
-            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
-                Error::Configuration(format!("invalid HTTP header name `{name}`: {error}"))
-            })?;
-            let value = HeaderValue::from_str(&value)
-                .map_err(|error| Error::Configuration(format!("invalid HTTP header: {error}")))?;
-            headers.insert(name, value);
-        }
+        insert_extra_headers(&mut headers, self.headers)?;
 
-        let client = Client::builder()
-            .default_headers(headers)
-            .timeout(self.timeout)
-            .build()?;
-        let base = self.base_url.trim_end_matches('/');
-        let endpoint = if base.ends_with("/messages") {
-            base.to_owned()
-        } else {
-            format!("{base}/messages")
-        };
+        let client = build_http_client(headers, self.timeout)?;
+        let endpoint =
+            resolve_versioned_endpoint(&self.base_url, "/v1", "/messages", &["/messages"]);
         Ok(Anthropic {
             client,
             model: self.model,
@@ -278,10 +264,16 @@ fn wire_messages(messages: &[Message]) -> Vec<Value> {
                 let mut blocks = Vec::new();
                 while index < messages.len() && messages[index].role == Role::Tool {
                     if let Some(call_id) = &messages[index].tool_call_id {
+                        let text = messages[index].text();
+                        let (text, is_error) = match text.strip_prefix("Tool error: ") {
+                            Some(error) => (error.to_owned(), true),
+                            None => (text, false),
+                        };
                         blocks.push(json!({
                             "type": "tool_result",
                             "tool_use_id": call_id,
-                            "content": messages[index].text()
+                            "content": text,
+                            "is_error": is_error
                         }));
                     }
                     index += 1;
@@ -334,9 +326,20 @@ fn wire_content(content: &[ContentPart]) -> Value {
             .iter()
             .map(|part| match part {
                 ContentPart::Text { text } => json!({ "type": "text", "text": text }),
-                ContentPart::Image { url, .. } => {
-                    json!({ "type": "image", "source": { "type": "url", "url": url } })
-                }
+                ContentPart::Image { url, mime_type } => match parse_data_url(url) {
+                    Some((data_mime, data)) => json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type.as_deref().unwrap_or(&data_mime),
+                            "data": data
+                        }
+                    }),
+                    None => json!({
+                        "type": "image",
+                        "source": { "type": "url", "url": url }
+                    }),
+                },
             })
             .collect(),
     )
@@ -386,7 +389,9 @@ fn parse_response(raw: &Value) -> Result<ModelResponse> {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned(),
-                    arguments: block.get("input").cloned().unwrap_or(Value::Null),
+                    arguments: object_tool_arguments(
+                        block.get("input").cloned().unwrap_or(Value::Null),
+                    ),
                 });
             }
             _ => {}
@@ -443,10 +448,12 @@ fn parse_usage(usage: Option<&Value>) -> Usage {
 struct AnthropicStream {
     text: String,
     tool_calls: BTreeMap<usize, AccumulatedToolCall>,
+    whole_tool_inputs: BTreeSet<usize>,
     stop_reason: Option<String>,
     input_tokens: u32,
     output_tokens: u32,
     model: Option<String>,
+    stopped: bool,
 }
 
 impl AnthropicStream {
@@ -467,6 +474,10 @@ impl AnthropicStream {
                         .pointer("/usage/input_tokens")
                         .and_then(Value::as_u64)
                         .unwrap_or_default() as u32;
+                    self.output_tokens = message
+                        .pointer("/usage/output_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default() as u32;
                 }
             }
             Some("content_block_start") => {
@@ -474,26 +485,50 @@ impl AnthropicStream {
                     .get("index")
                     .and_then(Value::as_u64)
                     .unwrap_or_default() as usize;
-                if let Some(block) = value.get("content_block")
-                    && block.get("type").and_then(Value::as_str) == Some("tool_use")
-                {
-                    let call = self.tool_calls.entry(index).or_default();
-                    call.id = block
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned();
-                    call.name = block
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned();
-                    on_delta(ModelDelta::ToolCall {
-                        index,
-                        id: (!call.id.is_empty()).then(|| call.id.clone()),
-                        name: (!call.name.is_empty()).then(|| call.name.clone()),
-                        arguments: None,
-                    });
+                if let Some(block) = value.get("content_block") {
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            if let Some(text) = block.get("text").and_then(Value::as_str)
+                                && !text.is_empty()
+                            {
+                                self.text.push_str(text);
+                                on_delta(ModelDelta::Text {
+                                    text: text.to_owned(),
+                                });
+                            }
+                        }
+                        Some("tool_use") => {
+                            let call = self.tool_calls.entry(index).or_default();
+                            call.id = block
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned();
+                            call.name = block
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned();
+                            let whole_input = block
+                                .get("input")
+                                .filter(|input| {
+                                    input.as_object().is_some_and(|object| !object.is_empty())
+                                })
+                                .cloned();
+                            let arguments = whole_input.map(|input| {
+                                self.whole_tool_inputs.insert(index);
+                                call.arguments = input.to_string();
+                                call.arguments.clone()
+                            });
+                            on_delta(ModelDelta::ToolCall {
+                                index,
+                                id: (!call.id.is_empty()).then(|| call.id.clone()),
+                                name: (!call.name.is_empty()).then(|| call.name.clone()),
+                                arguments,
+                            });
+                        }
+                        _ => {}
+                    }
                 }
             }
             Some("content_block_delta") => {
@@ -514,6 +549,9 @@ impl AnthropicStream {
                             }
                         }
                         Some("input_json_delta") => {
+                            if self.whole_tool_inputs.contains(&index) {
+                                return Ok(false);
+                            }
                             if let Some(fragment) =
                                 delta.get("partial_json").and_then(Value::as_str)
                             {
@@ -537,6 +575,9 @@ impl AnthropicStream {
                 if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
                     self.stop_reason = Some(reason.to_owned());
                 }
+                if let Some(tokens) = value.pointer("/usage/input_tokens").and_then(Value::as_u64) {
+                    self.input_tokens = tokens as u32;
+                }
                 if let Some(tokens) = value
                     .pointer("/usage/output_tokens")
                     .and_then(Value::as_u64)
@@ -544,11 +585,15 @@ impl AnthropicStream {
                     self.output_tokens = tokens as u32;
                 }
             }
-            Some("message_stop") => return Ok(true),
+            Some("message_stop") => {
+                self.stopped = true;
+                return Ok(true);
+            }
             Some("error") => {
                 let message = value
                     .pointer("/error/message")
                     .and_then(Value::as_str)
+                    .or_else(|| value.pointer("/error/type").and_then(Value::as_str))
                     .unwrap_or("Anthropic stream failed");
                 return Err(Error::Model(message.to_owned()));
             }
@@ -558,6 +603,11 @@ impl AnthropicStream {
     }
 
     fn finish(self, fallback_model: &str) -> Result<ModelResponse> {
+        if !self.stopped {
+            return Err(Error::InvalidModelResponse(
+                "Anthropic stream ended before message_stop".to_owned(),
+            ));
+        }
         let tool_calls = self
             .tool_calls
             .into_values()
@@ -643,6 +693,39 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_anthropic_base_url_and_data_url_images() {
+        let provider = Anthropic::builder("claude-test")
+            .base_url("https://api.anthropic.com")
+            .build()
+            .unwrap();
+        assert_eq!(provider.endpoint, "https://api.anthropic.com/v1/messages");
+
+        let request = ModelRequest {
+            messages: vec![Message::user_with_content(vec![
+                ContentPart::text("describe"),
+                ContentPart::image("data:image/png;base64,aGVsbG8="),
+            ])],
+            tools: Vec::new(),
+            tool_choice: crate::ToolChoice::Auto,
+            temperature: None,
+            max_tokens: None,
+        };
+        let body = provider.request_body(&request, false);
+        assert_eq!(
+            body["messages"][0]["content"][1]["source"]["type"],
+            "base64"
+        );
+        assert_eq!(
+            body["messages"][0]["content"][1]["source"]["media_type"],
+            "image/png"
+        );
+        assert_eq!(
+            body["messages"][0]["content"][1]["source"]["data"],
+            "aGVsbG8="
+        );
+    }
+
+    #[test]
     fn decodes_anthropic_response() {
         let raw = json!({
             "id": "msg-1",
@@ -692,5 +775,40 @@ mod tests {
         );
         assert_eq!(response.finish_reason, FinishReason::ToolCalls);
         assert_eq!(response.usage.output_tokens, 4);
+    }
+
+    #[test]
+    fn accepts_tool_input_sent_whole_at_block_start() {
+        let on_delta = |_delta| {};
+        let mut stream = AnthropicStream::default();
+        for data in [
+            r#"{"type":"message_start","message":{"model":"claude-test","usage":{"input_tokens":3}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-1","name":"echo","input":{"text":"hi"}}}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}"#,
+            r#"{"type":"message_stop"}"#,
+        ] {
+            stream.consume(data, &on_delta).unwrap();
+        }
+
+        let response = stream.finish("test").unwrap();
+        assert_eq!(
+            response.message.tool_calls[0].arguments,
+            json!({"text": "hi"})
+        );
+    }
+
+    #[test]
+    fn rejects_stream_without_message_stop() {
+        let on_delta = |_delta| {};
+        let mut stream = AnthropicStream::default();
+        stream
+            .consume(
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}"#,
+                &on_delta,
+            )
+            .unwrap();
+
+        let error = stream.finish("test").unwrap_err();
+        assert!(error.to_string().contains("message_stop"));
     }
 }
