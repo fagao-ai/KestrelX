@@ -1,0 +1,16 @@
+[package]
+name = "kestrel-store-sqlite"
+version = "0.1.0"
+edition = "2024"
+description = "SQLite SessionStore adapter for Kestrel"
+
+[dependencies]
+async-trait = "0.1"
+kestrel = { path = "..", default-features = false }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -5,7 +5,13 @@ edition = "2024"
 description = "A composable, scenario-agnostic agent core for Rust"
 
 [workspace]
-members = [".", "kestrel-contract", "kestrel-ffi", "kestrel-node"]
+members = [
+  ".",
+  "kestrel-contract",
+  "kestrel-ffi",
+  "kestrel-node",
+  "kestrel-store-sqlite",
+]
 resolver = "3"
 
 [dependencies]
