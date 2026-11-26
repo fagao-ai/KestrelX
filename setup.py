@@ -12,7 +12,7 @@ from setuptools.command.build_py import build_py
 from wheel.bdist_wheel import bdist_wheel
 
 ROOT = Path(__file__).resolve().parent
-PACKAGE = "kestrel_agent_core"
+PACKAGE = "kestrelx"
 
 
 def native_library_name() -> str:

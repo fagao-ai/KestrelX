@@ -1,7 +1,6 @@
 # Publishing to PyPI
 
-The distribution name is `kestrel-agent-core`; the import package is
-`kestrel_agent_core`.
+The distribution name and import package are both `kestrelx`.
 
 ## GitHub Actions release
 
@@ -10,7 +9,7 @@ repository secret is needed.
 
 Before the first run, configure a pending trusted publisher:
 
-- PyPI project name: `kestrel-agent-core`
+- PyPI project name: `kestrelx`
 - GitHub owner: `fagao-ai`
 - Repository: `kestrel`
 - Workflow: `python-release.yml`
@@ -34,7 +33,7 @@ git push origin v0.0.1
 ```
 
 Tag pushes and manual `pypi` runs publish to the production index. PyPI
-versions are immutable, so bump `bindings/python/kestrel_agent_core/_version.py`
+versions are immutable, so bump `bindings/python/kestrelx/_version.py`
 for every release.
 
 ## Build
@@ -50,7 +49,7 @@ python -m twine check dist/*
 
 `python -m build` creates:
 
-- a platform wheel containing `kestrel_agent_core/_native/libkestrel_ffi.*`
+- a platform wheel containing `kestrelx/_native/libkestrel_ffi.*`
 - an sdist containing the Rust workspace, which can rebuild the native library
   on platforms without a prebuilt wheel
 
@@ -61,9 +60,9 @@ CI; do not publish a macOS wheel for Linux users.
 
 ```bash
 python3 -m venv /tmp/kestrel-wheel-test
-/tmp/kestrel-wheel-test/bin/pip install dist/kestrel_agent_core-*.whl
+/tmp/kestrel-wheel-test/bin/pip install dist/kestrelx-*.whl
 /tmp/kestrel-wheel-test/bin/python -c \
-  "import kestrel_agent_core as k; print(k.__version__, k.contract_version())"
+  "import kestrelx as k; print(k.__version__, k.contract_version())"
 ```
 
 ## Upload to TestPyPI first
@@ -84,7 +83,7 @@ Install from TestPyPI in a clean environment:
 ```bash
 python -m pip install \
   --index-url https://test.pypi.org/simple/ \
-  kestrel-agent-core
+  kestrelx
 ```
 
 ## Upload to PyPI

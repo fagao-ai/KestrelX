@@ -561,14 +561,14 @@ runtime 线程调用。
 `schema_version`、capability 集合和 `fixtures/` 测试数据；不支持的配置字段或能力会
 在构造 Agent 前明确报错，而不是被静默忽略。
 
-Python 包发布名为 `kestrel-agent-core`，导入名为 `kestrel_agent_core`：
+Python 包发布名和导入名都是 `kestrelx`：
 
 ```bash
-pip install kestrel-agent-core
+pip install kestrelx
 ```
 
 ```python
-from kestrel_agent_core import Agent
+from kestrelx import Agent
 
 with Agent({"provider": {"kind": "anthropic", "model": "claude-sonnet-4-5"}}) as agent:
     print(agent.run("Hello")["text"])
@@ -698,7 +698,7 @@ kestrel-store-postgres/ # 独立 PostgreSQL SessionStore adapter
 kestrel-contract/ # 共享配置 schema、capability、golden fixtures
 kestrel-node/    # napi-rs Rust addon
 bindings/python/
-  kestrel_agent_core/ # ctypes Python package
+  kestrelx/     # ctypes Python package
   PUBLISHING.md # PyPI 构建与发布步骤
   example.py    # 离线 callback model + tool 示例
   example_async.py # 非阻塞 run + 事件轮询示例

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from kestrel_agent_core import Agent
+from kestrelx import Agent
 
 
 def model(request: dict) -> dict:

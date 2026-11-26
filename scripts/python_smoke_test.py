@@ -1,8 +1,8 @@
-"""Smoke test an installed kestrel-agent-core wheel without network access."""
+"""Smoke test an installed kestrelx wheel without network access."""
 
 from __future__ import annotations
 
-import kestrel_agent_core as kestrel
+import kestrelx as kestrel
 
 
 def model(_request: dict) -> dict:
@@ -36,7 +36,7 @@ def main() -> None:
     ) as agent:
         output = agent.run("hello")
     assert output["text"] == "installed wheel works"
-    print(f"kestrel-agent-core {kestrel.__version__}: wheel smoke test passed")
+    print(f"kestrelx {kestrel.__version__}: wheel smoke test passed")
 
 
 if __name__ == "__main__":

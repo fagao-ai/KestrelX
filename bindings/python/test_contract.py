@@ -6,7 +6,7 @@ import json
 import unittest
 from pathlib import Path
 
-import kestrel_agent_core as kestrel
+import kestrelx as kestrel
 
 
 class ContractTests(unittest.TestCase):

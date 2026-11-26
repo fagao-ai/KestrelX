@@ -4,11 +4,11 @@ Kestrel is a scenario-agnostic agent runtime with a Rust core and a Python
 `ctypes` binding. Published platform wheels include the native library.
 
 ```bash
-pip install kestrel-agent-core
+pip install kestrelx
 ```
 
 ```python
-from kestrel_agent_core import Agent
+from kestrelx import Agent
 
 with Agent({
     "provider": {
@@ -19,8 +19,7 @@ with Agent({
     print(agent.run("Hello")["text"])
 ```
 
-The distribution name is `kestrel-agent-core`; the import name is
-`kestrel_agent_core`.
+The distribution name and import name are both `kestrelx`.
 
 ## Development install
 
@@ -39,7 +38,7 @@ The basic example uses a Python model callback and a Python echo tool, so it
 runs offline. For a built-in provider:
 
 ```python
-from kestrel_agent_core import Agent
+from kestrelx import Agent
 
 with Agent({
     "system_prompt": "Be concise.",
@@ -91,7 +90,7 @@ See `example_persistence.py` for an in-memory database example.
 Contract helpers mirror the C ABI:
 
 ```python
-import kestrel_agent_core as kestrel
+import kestrelx as kestrel
 
 kestrel.contract_version()          # 1
 kestrel.capabilities()              # capability names
