@@ -45,6 +45,8 @@ mod session;
 mod tool;
 mod util;
 
+#[cfg(feature = "anthropic")]
+mod anthropic;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 #[cfg(feature = "openai")]
@@ -82,6 +84,8 @@ pub use tool::{
     Tool, ToolConcurrency, ToolContext, ToolOutput, ToolRegistry, ToolSpec, function_tool,
 };
 
+#[cfg(feature = "anthropic")]
+pub use anthropic::{Anthropic, AnthropicBuilder};
 #[cfg(feature = "openai")]
 pub use openai::{OpenAiCompatible, OpenAiCompatibleBuilder};
 #[cfg(feature = "openai")]

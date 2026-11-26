@@ -125,7 +125,12 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     /// A request to a model provider failed.
-    #[cfg(any(feature = "mcp", feature = "openai"))]
+    #[cfg(any(
+        feature = "anthropic",
+        feature = "gemini",
+        feature = "mcp",
+        feature = "openai"
+    ))]
     #[error(transparent)]
     Http(#[from] reqwest::Error),
 }
