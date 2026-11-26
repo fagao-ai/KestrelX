@@ -20,17 +20,17 @@ For a TestPyPI rehearsal, add the same pending publisher on TestPyPI with
 environment `testpypi`. Then create matching GitHub environments under
 `Settings -> Environments` (`pypi` and optionally `testpypi`).
 
-The workflow builds the sdist and macOS arm64/x86_64 wheels. Linux and Windows
-currently install from the sdist and therefore need a Rust toolchain; add
-manylinux and Windows wheel jobs before advertising broad platform support.
+The workflow builds the sdist plus macOS arm64/x86_64, manylinux_2_28 x86_64,
+and Windows x64 wheels. All wheels are installed and smoke-tested before the
+publish job starts.
 
 Run the workflow manually and choose `build-only` to verify every build without
 uploading. Then choose `testpypi`. After the package is verified there, either
 run it again with `pypi`, or publish a tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.0.1
+git push origin v0.0.1
 ```
 
 Tag pushes and manual `pypi` runs publish to the production index. PyPI

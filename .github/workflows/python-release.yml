@@ -80,12 +80,71 @@ jobs:
           path: wheelhouse/*
           if-no-files-found: error
 
+  manylinux-wheel:
+    name: Linux wheel (manylinux x86_64)
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Allow container git access
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build wheel
+        env:
+          KESTREL_WHEEL_PLATFORM: manylinux_2_28_x86_64
+        run: |
+          /opt/python/cp312-cp312/bin/python -m pip install --upgrade build twine
+          /opt/python/cp312-cp312/bin/python -m build --wheel --outdir wheelhouse
+          /opt/python/cp312-cp312/bin/python -m twine check wheelhouse/*
+      - name: Audit wheel
+        run: /opt/python/cp312-cp312/bin/auditwheel show wheelhouse/*.whl
+      - name: Smoke-test installed wheel
+        run: |
+          /opt/python/cp312-cp312/bin/python -m pip install --force-reinstall wheelhouse/*.whl
+          cd /tmp
+          /opt/python/cp312-cp312/bin/python "$GITHUB_WORKSPACE/scripts/python_smoke_test.py"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-manylinux-x86_64
+          path: wheelhouse/*
+          if-no-files-found: error
+
+  windows-wheel:
+    name: Windows wheel (x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build wheel
+        env:
+          KESTREL_WHEEL_PLATFORM: win_amd64
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build --wheel --outdir wheelhouse
+          python -m twine check wheelhouse/*
+      - name: Smoke-test installed wheel
+        shell: bash
+        run: |
+          python -m pip install --force-reinstall wheelhouse/*.whl
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/scripts/python_smoke_test.py"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-windows-x64
+          path: wheelhouse/*
+          if-no-files-found: error
+
   publish:
     name: Publish Python package
     if: github.event_name != 'workflow_dispatch' || inputs.target != 'build-only'
     needs:
       - sdist
       - macos-wheels
+      - manylinux-wheel
+      - windows-wheel
     runs-on: ubuntu-latest
     environment:
       name: >-
