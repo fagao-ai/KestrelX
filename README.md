@@ -106,6 +106,24 @@ let echo = function_tool(
 工具错误默认为 recoverable：会作为 `Tool error: ...` 反馈给模型。设置
 `.fail_on_tool_error(true)` 可以立即中止 run。
 
+工具执行策略也是显式配置的：
+
+```rust
+use kestrel::ToolConcurrency;
+
+let agent = Agent::builder(model)
+    .tool_timeout_ms(Some(30_000))
+    .max_tool_output_chars(Some(20_000))
+    .tool_concurrency(ToolConcurrency::Parallel)
+    .build()?;
+```
+
+默认无超时、不截断、串行执行。超时默认作为 recoverable tool error 回传给模型；
+启用 `fail_on_tool_error` 后返回 `Error::ToolTimeout`。输出超过上限时会保留前 N 个字符
+并附加截断标记。并行模式只影响同一条 assistant 消息里的多个 tool calls；结果仍按调用
+顺序写入历史。若并行批次中断，checkpoint 会把整批视为不确定状态，默认需要显式
+`retry_uncertain_tools` 才允许重跑。
+
 ### Agent loop
 
 每次模型调用依次执行：
@@ -113,7 +131,7 @@ let echo = function_tool(
 1. 注入基础 system prompt、skills/policy 提示片段和自动召回的记忆。
 2. 在超过上下文预算时压缩历史。
 3. 调用 `Model::complete_stream`；不支持的模型会回退为单次 `complete`。
-4. 追加 assistant 消息；若有 tool call，则依次执行工具并追加结果。
+4. 追加 assistant 消息；若有 tool call，则按配置串行或并行执行并追加结果。
 5. 没有 tool call 时返回 `AgentOutput`；否则继续下一 turn。
 
 同一 `Agent` 的并发 run 会串行化。`Agent::clone()` 共享会话；`Agent::fork()` 和
@@ -283,6 +301,9 @@ span 只记录 `run_id`、`session_id`、turn、模型名、工具名、token �
 默认不记录 prompt、工具参数或工具输出，避免泄漏密钥和业务数据。`AgentEvent` 仍然是
 面向 SDK/客户端的稳定事件流，`tracing` 用于服务端诊断和遥测。
 
+`tool.call` 还会记录 `timeout_ms`、`timed_out`、`truncated` 和 `output_chars`，
+便于定位慢工具和异常大的输出。
+
 ### 流式输出
 
 `Agent` 默认启用 streaming。文本和 tool-call 片段通过 `model_delta` 事件流出，
@@ -435,6 +456,9 @@ cargo build -p kestrel-ffi --release
   "session_id": "user-42",
   "max_turns": 8,
   "streaming": true,
+  "tool_timeout_ms": 30000,
+  "max_tool_output_chars": 20000,
+  "tool_concurrency": "serial",
   "todo": true,
   "memory": { "enabled": true, "tools": true },
   "compression": { "kind": "sliding", "max_tokens": 80000 },
@@ -518,7 +542,7 @@ bindings/node       # napi-rs 原生 addon
 ## 当前边界
 
 - OpenAI provider 和自定义 streaming model callback 都支持 token/tool-call 增量。
-- 单一模型调用内不并发执行工具，保证结果顺序和错误语义简单可预测。
+- 工具默认串行；显式启用 `parallel` 后才并发，且结果仍保持调用顺序。
 - OpenAI provider 使用 Chat Completions 兼容协议，不覆盖 Responses API。
 - MCP 支持 stdio 与 Streamable HTTP；sampling/roots 和 server-initiated requests 尚未支持。
 - FFI 同时提供同步 `run` 和异步 `start_run`；异步 handle 的 `poll/wait` 本身是同步
