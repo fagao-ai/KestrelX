@@ -97,7 +97,7 @@ jobs:
           /opt/python/cp312-cp312/bin/python -m build --wheel --outdir wheelhouse
           /opt/python/cp312-cp312/bin/python -m twine check wheelhouse/*
       - name: Audit wheel
-        run: /opt/python/cp312-cp312/bin/auditwheel show wheelhouse/*.whl
+        run: auditwheel show wheelhouse/*.whl
       - name: Smoke-test installed wheel
         run: |
           /opt/python/cp312-cp312/bin/python -m pip install --force-reinstall wheelhouse/*.whl
