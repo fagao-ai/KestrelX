@@ -33,8 +33,8 @@ with what a binding implements. Examples:
 - `host_tools`, `session_store`, `memory_store`
 
 This prevents a binding from silently ignoring config it cannot implement. For
-example, the current Node addon accepts the shared schema but rejects
-`mcp_servers` because it does not yet advertise `mcp_stdio` / `mcp_http`.
+example, a binding that does not advertise `mcp_stdio` / `mcp_http` rejects
+configuration containing `mcp_servers` before creating an agent.
 
 ## Golden fixtures
 

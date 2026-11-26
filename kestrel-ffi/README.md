@@ -26,7 +26,7 @@ Main functions:
 
 | Function | Purpose |
 |---|---|
-| `kestrel_agent_new` | OpenAI-compatible agent from config JSON |
+| `kestrel_agent_new` | agent with a built-in HTTP provider from config JSON |
 | `kestrel_agent_new_with_model` | agent backed by a host model callback |
 | `kestrel_agent_new_with_streaming_model` | host model with token deltas |
 | `kestrel_agent_register_tool` | register a synchronous host tool |
