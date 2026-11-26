@@ -103,6 +103,15 @@ tool schema、tool call、usage、SSE 增量、HTTP provider error 和流终止�
 不包含厂商协议分支。OpenAI Responses 使用 `store: false` 并按本地历史重放，不依赖服务端
 保存状态。
 
+需要运行时选择协议时，使用统一的 `ProviderConfig`（会自动读取各厂商环境变量）：
+
+```rust
+use kestrel::{ProviderConfig, ProviderKind};
+
+let model = ProviderConfig::new(ProviderKind::Gemini, "gemini-2.5-pro").build()?;
+let agent = Agent::builder(model).build()?;
+```
+
 各协议的高级能力（thinking、prompt cache、server tools、Gemini thought signature 等）
 目前还未全部暴露为强类型配置，部分原始响应保留在 `raw`。
 
@@ -477,7 +486,8 @@ let agent = builder.build()?;
 仓库现在包含独立的 `kestrel-ffi` crate：
 
 - 稳定 C ABI，头文件位于 `kestrel-ffi/include/kestrel.h`
-- OpenAI-compatible 或宿主语言自定义 model callback（支持 token delta）
+- OpenAI Chat/Responses、Anthropic、Gemini 内置 provider 或宿主语言自定义 model callback
+  （支持 token delta）
 - 宿主语言 tool callback
 - 同步事件 callback（包含 `model_delta`）
 - 阻塞 run、非阻塞 `KestrelRun`、事件轮询、跨线程取消、Session/Todo JSON 快照
@@ -521,13 +531,22 @@ cargo build -p kestrel-ffi --release
       "request_timeout_seconds": 30
     }
   ],
-  "openai": {
-    "model": "gpt-4.1-mini",
-    "api_key": "optional; falls back to OPENAI_API_KEY",
-    "base_url": "optional; falls back to OPENAI_BASE_URL"
+  "provider": {
+    "kind": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "api_key": "optional; falls back to ANTHROPIC_API_KEY",
+    "base_url": "optional",
+    "api_version": "optional; defaults to 2023-06-01",
+    "context_window": 200000,
+    "timeout_seconds": 120,
+    "headers": {}
   }
 }
 ```
+
+`provider.kind` 支持 `openai_chat`、`openai_responses`、`anthropic` 和 `gemini`。
+旧版 `"openai": {...}` 配置继续兼容；两者同时出现时 `provider` 优先。C ABI、Python、
+Go 和 Node 共享同一份配置契约。
 
 自定义模型通过 `kestrel_agent_new_with_model` 注册。callback 收到序列化的
 `ModelRequest`，返回序列化的 `ModelResponse`。需要 token 级输出时使用
@@ -643,9 +662,13 @@ src/
   memory/       # 长期记忆 trait、内存实现、工具
   session.rs    # 会话与持久化
   model.rs      # LLM 抽象
+  provider_config.rs # 统一 provider 选择与构建
   tool.rs       # Tool trait、function_tool、registry
   event.rs      # 可序列化事件与 sink
   openai.rs     # 可选 OpenAI-compatible provider
+  openai_responses.rs # 可选 OpenAI Responses provider
+  anthropic.rs  # 可选 Anthropic Messages provider
+  gemini.rs     # 可选 Gemini provider
   todo.rs       # 可选 Todo
   subagent.rs   # 可选子 agent 工具
   mcp/          # 可选 stdio / Streamable HTTP MCP

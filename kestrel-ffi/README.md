@@ -109,19 +109,29 @@ also be freed with `kestrel_string_free`.
       "request_timeout_seconds": 30
     }
   ],
-  "openai": {
-    "model": "gpt-4.1-mini",
+  "provider": {
+    "kind": "openai_responses",
+    "model": "gpt-5",
     "api_key": "optional",
     "base_url": "optional",
+    "api_version": "optional; Anthropic only",
     "context_window": 128000,
     "timeout_seconds": 120,
-    "stream_usage": true
+    "headers": {}
   }
 }
 ```
 
-`compression.kind` accepts `sliding` or `summarizing`. OpenAI credentials fall
-back to `OPENAI_API_KEY` and `OPENAI_BASE_URL`.
+`provider.kind` accepts `openai_chat`, `openai_responses`, `anthropic`, or
+`gemini`. The legacy `"openai": {"model": "..."}` form remains supported and is
+used when `provider` is absent. Explicit settings override the conventional
+environment variables:
+
+- OpenAI: `OPENAI_API_KEY`, `OPENAI_BASE_URL`
+- Anthropic: `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_VERSION`
+- Gemini: `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `GEMINI_BASE_URL`
+
+`compression.kind` accepts `sliding` or `summarizing`.
 
 The schema is shared with all SDKs through `kestrel-contract`. The ABI exposes:
 
@@ -137,8 +147,9 @@ rejected. Each `mcp_servers` entry uses `url` for Streamable HTTP or `command`
 for stdio. MCP connects during agent construction, which blocks and must not run
 on a Tokio runtime thread.
 
-For `kestrel_agent_new_with_model`, `openai.model` is only used as the model's
-display name; no HTTP request is made.
+For `kestrel_agent_new_with_model`, `provider.model` (or legacy
+`openai.model`) is only used as the model's display name; no HTTP request is
+made.
 
 ## Host persistence
 

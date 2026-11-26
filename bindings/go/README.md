@@ -16,7 +16,7 @@ paths in `callbacks.go`, or provide an equivalent deployment layout.
 
 ## Features
 
-- OpenAI-compatible config passthrough
+- OpenAI Chat/Responses, Anthropic, and Gemini config passthrough
 - custom model and streaming model callbacks
 - synchronous tools
 - event callbacks and per-run event polling
@@ -33,7 +33,10 @@ paths in `callbacks.go`, or provide an equivalent deployment layout.
 agent, err := kestrel.New(
     map[string]any{
         "streaming": true,
-        "openai": map[string]any{"model": "gpt-4.1-mini"},
+        "provider": map[string]any{
+            "kind":  "openai_chat",
+            "model": "gpt-4.1-mini",
+        },
     },
 )
 if err != nil {
@@ -43,6 +46,9 @@ defer agent.Close()
 
 output, err := agent.Run(context.Background(), "Hello")
 ```
+
+`provider.kind` accepts `openai_chat`, `openai_responses`, `anthropic`, or
+`gemini`. The legacy `openai` section remains supported.
 
 For custom models:
 

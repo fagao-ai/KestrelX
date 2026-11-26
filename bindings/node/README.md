@@ -24,7 +24,7 @@ const agent = createAgent(
     schema_version: 1,
     system_prompt: 'Be concise.',
     streaming: true,
-    openai: { model: 'gpt-4.1-mini' },
+    provider: { kind: 'openai_chat', model: 'gpt-4.1-mini' },
   },
   undefined,
   (event) => {
@@ -93,7 +93,13 @@ const agent = createAgent(config, {
 ```
 
 Non-streaming `model` handlers emit their final assistant text as one delta.
-The built-in OpenAI provider emits native token/tool-call deltas.
+Built-in HTTP providers emit native token/tool-call deltas.
+
+## Providers
+
+`provider.kind` accepts `openai_chat`, `openai_responses`, `anthropic`, or
+`gemini`. Explicit API keys and URLs override the conventional environment
+variables. The legacy `openai: { model: ... }` form remains supported.
 
 Tools are async functions receiving `(callId, arguments)` and returning either
 a string or a `ToolOutput` object:
@@ -130,7 +136,7 @@ const agent = await createAgentAsync(
       { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '.'] },
       { url: 'https://example.com/mcp', headers: { Authorization: 'Bearer ...' } },
     ],
-    openai: { model: 'gpt-4.1-mini' },
+    provider: { kind: 'openai_chat', model: 'gpt-4.1-mini' },
   },
   { onEvent: (event) => console.log(event) }
 );
@@ -178,11 +184,11 @@ Rust and FFI SDKs; unsupported config is rejected before an Agent is created.
 
 ## Current scope
 
-- OpenAI-compatible provider through config
+- OpenAI Chat/Responses, Anthropic, and Gemini providers through config
 - custom async JavaScript model
 - custom JavaScript streaming model
 - async JavaScript tools
-- event callback with OpenAI token stream
+- event callback with provider token/tool-call stream
 - Todo, in-memory memory tools, compression, Skills, and sub-agents via config
 - session/todo/reset snapshots
 - JS-backed SessionStore and Memory

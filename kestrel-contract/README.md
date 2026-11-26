@@ -5,7 +5,11 @@ Shared, versioned JSON configuration for Kestrel language bindings.
 ```json
 {
   "schema_version": 1,
-  "openai": { "model": "gpt-4.1-mini" }
+  "provider": {
+    "kind": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "context_window": 200000
+  }
 }
 ```
 
@@ -13,12 +17,16 @@ Shared, versioned JSON configuration for Kestrel language bindings.
 an [`AgentConfig`](src/config.rs), calls `validate(has_custom_model,
 capabilities)`, and only then constructs an agent.
 
+`provider.kind` accepts `openai_chat`, `openai_responses`, `anthropic`, or
+`gemini`. The legacy `"openai": {"model": "..."}` form remains supported and is
+used when `provider` is absent.
+
 ## Capabilities
 
 The contract returns required capabilities from the config and compares them
 with what a binding implements. Examples:
 
-- `openai`, `custom_model`, `streaming`
+- `openai`, `openai_responses`, `anthropic`, `gemini`, `custom_model`, `streaming`
 - `todo`, `memory`, `subagent`, `skills`
 - `compression_sliding`, `compression_summarizing`
 - `mcp_stdio`, `mcp_http`
@@ -30,6 +38,6 @@ example, the current Node addon accepts the shared schema but rejects
 
 ## Golden fixtures
 
-`fixtures/minimal.json` and `fixtures/full.json` are consumed by Rust, FFI,
-Python, Go, and Node tests. Add fixtures for every wire-visible behavior and
-update capability lists deliberately.
+`fixtures/minimal.json`, `fixtures/full.json`, and `fixtures/provider.json` are
+consumed by Rust, FFI, Python, Go, and Node tests. Add fixtures for every
+wire-visible behavior and update capability lists deliberately.

@@ -15,7 +15,7 @@ Set `KESTREL_FFI_PATH` when the shared library is not under `target/debug` or
 `target/release`.
 
 The example uses a Python model callback and a Python echo tool, so it runs
-offline. For the OpenAI path:
+offline. For a built-in provider:
 
 ```python
 from kestrel import Agent
@@ -23,12 +23,15 @@ from kestrel import Agent
 with Agent({
     "system_prompt": "Be concise.",
     "streaming": True,
-    "openai": {"model": "gpt-4.1-mini"},
+    "provider": {"kind": "openai_chat", "model": "gpt-4.1-mini"},
 }) as agent:
     agent.set_event_handler(lambda event: print(event))
     output = agent.run("Hello")
     print(output["text"])
 ```
+
+`provider.kind` accepts `openai_chat`, `openai_responses`, `anthropic`, or
+`gemini`. The legacy `openai` section remains supported.
 
 The native run is blocking. In an async Python application, call it through
 `asyncio.to_thread` or your framework's equivalent worker mechanism.
