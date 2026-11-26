@@ -11,6 +11,17 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Error, Result};
 
+/// How tool calls from one assistant message are executed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolConcurrency {
+    /// Execute tool calls in request order.
+    #[default]
+    Serial,
+    /// Poll all requested tool calls concurrently.
+    Parallel,
+}
+
 /// JSON Schema description of a tool.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolSpec {

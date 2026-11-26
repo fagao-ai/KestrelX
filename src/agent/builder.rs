@@ -2,6 +2,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 use tokio::sync::{Mutex, RwLock};
 
+use crate::ToolConcurrency;
 use crate::{
     Agent, AgentConfig, ContextCompressor, EventSink, HeuristicTokenCounter, Memory, MemoryOptions,
     Model, Session, SessionStore, TokenCounter, Tool, ToolRegistry, memory_tools,
@@ -136,6 +137,24 @@ impl AgentBuilder {
         self
     }
 
+    /// Sets a per-tool execution timeout in milliseconds.
+    pub fn tool_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
+        self.config.tool_timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Limits retained characters from one tool output.
+    pub fn max_tool_output_chars(mut self, max_chars: Option<usize>) -> Self {
+        self.config.max_tool_output_chars = max_chars;
+        self
+    }
+
+    /// Sets whether tool calls from one assistant message run concurrently.
+    pub fn tool_concurrency(mut self, concurrency: ToolConcurrency) -> Self {
+        self.config.tool_concurrency = concurrency;
+        self
+    }
+
     /// Uses an existing session.
     pub fn session(mut self, session: Session) -> Self {
         self.session = Some(session);
@@ -213,6 +232,16 @@ impl AgentBuilder {
         if self.config.max_output_tokens == Some(0) {
             return Err(crate::Error::Configuration(
                 "max_output_tokens must be greater than zero".to_owned(),
+            ));
+        }
+        if self.config.tool_timeout_ms == Some(0) {
+            return Err(crate::Error::Configuration(
+                "tool_timeout_ms must be greater than zero".to_owned(),
+            ));
+        }
+        if self.config.max_tool_output_chars == Some(0) {
+            return Err(crate::Error::Configuration(
+                "max_tool_output_chars must be greater than zero".to_owned(),
             ));
         }
         if self.memory_tools_enabled && self.memory.is_none() {

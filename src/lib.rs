@@ -74,7 +74,9 @@ pub use model::{Model, ModelDelta, ModelRequest, ModelResponse, ToolChoice};
 pub use session::{
     InMemorySessionStore, RunCheckpoint, RunPhase, SESSION_SCHEMA_VERSION, Session, SessionStore,
 };
-pub use tool::{Tool, ToolContext, ToolOutput, ToolRegistry, ToolSpec, function_tool};
+pub use tool::{
+    Tool, ToolConcurrency, ToolContext, ToolOutput, ToolRegistry, ToolSpec, function_tool,
+};
 
 #[cfg(feature = "openai")]
 pub use openai::{OpenAiCompatible, OpenAiCompatibleBuilder};

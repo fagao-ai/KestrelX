@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use kestrel::{MemoryOptions, ToolChoice};
+use kestrel::{MemoryOptions, ToolChoice, ToolConcurrency};
 use serde::{Deserialize, Serialize};
 
 use crate::{Capability, CapabilitySet, ContractError, SCHEMA_VERSION};
@@ -33,6 +33,12 @@ pub struct AgentConfig {
     pub fail_on_tool_error: bool,
     /// Tool selection policy.
     pub tool_choice: Option<ToolChoice>,
+    /// Per-tool execution timeout in milliseconds.
+    pub tool_timeout_ms: Option<u64>,
+    /// Maximum retained tool output characters.
+    pub max_tool_output_chars: Option<usize>,
+    /// Tool call concurrency policy.
+    pub tool_concurrency: ToolConcurrency,
     /// Install todo tools.
     pub todo: bool,
     /// Long-term memory settings.
@@ -64,6 +70,9 @@ impl Default for AgentConfig {
             streaming: true,
             fail_on_tool_error: false,
             tool_choice: None,
+            tool_timeout_ms: None,
+            max_tool_output_chars: None,
+            tool_concurrency: ToolConcurrency::Serial,
             todo: false,
             memory: MemorySettings::default(),
             compression: None,
@@ -171,6 +180,9 @@ impl AgentConfig {
             reserve_output_tokens: self.reserve_output_tokens,
             streaming: self.streaming,
             fail_on_tool_error: self.fail_on_tool_error,
+            tool_timeout_ms: self.tool_timeout_ms,
+            max_tool_output_chars: self.max_tool_output_chars,
+            tool_concurrency: self.tool_concurrency,
             ..Default::default()
         };
         if let Some(tool_choice) = &self.tool_choice {
@@ -210,6 +222,12 @@ impl AgentConfig {
         }
         if self.max_output_tokens == Some(0) {
             return Err(invalid("max_output_tokens must be greater than zero"));
+        }
+        if self.tool_timeout_ms == Some(0) {
+            return Err(invalid("tool_timeout_ms must be greater than zero"));
+        }
+        if self.max_tool_output_chars == Some(0) {
+            return Err(invalid("max_tool_output_chars must be greater than zero"));
         }
         if let Some(temperature) = self.temperature
             && (!temperature.is_finite() || temperature < 0.0)
@@ -507,6 +525,18 @@ mod tests {
             }"#,
         )
         .unwrap();
+        assert!(config.validate(false, &all_capabilities()).is_err());
+    }
+
+    #[test]
+    fn validates_tool_execution_limits() {
+        let mut config = AgentConfig::default();
+        config.openai.model = "gpt-4.1-mini".to_owned();
+        config.tool_timeout_ms = Some(0);
+        assert!(config.validate(false, &all_capabilities()).is_err());
+
+        config.tool_timeout_ms = None;
+        config.max_tool_output_chars = Some(0);
         assert!(config.validate(false, &all_capabilities()).is_err());
     }
 }

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
+use crate::ToolConcurrency;
 use crate::{
     ContextCompressor, EventSink, FinishReason, Memory, MemoryOptions, Message, Model, Session,
     SessionStore, TokenCounter, ToolChoice, ToolRegistry, Usage,
@@ -35,6 +36,12 @@ pub struct AgentConfig {
     /// Request incremental model output. Models without native streaming still
     /// emit their final text as one delta.
     pub streaming: bool,
+    /// Per-tool execution timeout.
+    pub tool_timeout_ms: Option<u64>,
+    /// Maximum characters retained from one tool output.
+    pub max_tool_output_chars: Option<usize>,
+    /// Tool call concurrency for one assistant message.
+    pub tool_concurrency: ToolConcurrency,
 }
 
 impl Default for AgentConfig {
@@ -48,6 +55,9 @@ impl Default for AgentConfig {
             tool_choice: ToolChoice::Auto,
             fail_on_tool_error: false,
             streaming: true,
+            tool_timeout_ms: None,
+            max_tool_output_chars: None,
+            tool_concurrency: ToolConcurrency::Serial,
         }
     }
 }
