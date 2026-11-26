@@ -180,12 +180,13 @@ let agent = Agent::builder(model)
 
 `Session` 带 `schema_version`、`revision` 和可选的 `active_run`。数据库 adapter 应保存
 完整的版本化 JSON/BLOB，并用 `revision` 做乐观并发控制。官方 adapter 以独立 crate
-发布：SQLite 已提供，Postgres 以后按同样边界增加；核心 `kestrel` 不依赖 SQLite。
+发布：SQLite 和 PostgreSQL 都已提供；核心 `kestrel` 不依赖数据库。
 
 ```toml
 [dependencies]
 kestrel = { path = "." }
 kestrel-store-sqlite = { path = "./kestrel-store-sqlite" }
+kestrel-store-postgres = { path = "./kestrel-store-postgres" }
 ```
 
 ```rust
@@ -201,6 +202,9 @@ let agent = Agent::builder(model)
 
 `SqliteSessionStore` 使用自己的 `PRAGMA user_version` migration，保存完整 Session JSON，
 并在 `BEGIN IMMEDIATE` 事务中拒绝旧 revision 覆盖新 revision。
+
+`PostgresSessionStore` 使用 `kestrel_store_meta` 记录 schema 版本，并通过 per-session
+PostgreSQL advisory lock 串行化 revision 检查和写入。
 
 `agent.reset()` 清空当前历史但保留 session ID；`agent.delete_session()` 会同时删除
 持久化记录并清空本地历史，下一次 run 使用相同 ID 从空会话开始。
@@ -503,6 +507,7 @@ Node SDK 的同步 `createAgent()` 不连接 MCP；含 `mcp_servers` 时使用
 ```text
 kestrel             # 核心 Rust library
 kestrel-store-sqlite # 独立 SQLite SessionStore adapter
+kestrel-store-postgres # 独立 PostgreSQL SessionStore adapter
 kestrel-ffi         # C ABI + opaque agent + callback runtime
 kestrel-contract    # 版本化配置 schema 与 capability 校验
 bindings/python     # ctypes 参考 SDK
@@ -536,6 +541,8 @@ bash scripts/check-line-limits.sh
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo test --workspace --all-features
 cargo test -p kestrel-store-sqlite
+# 需要 KESTREL_POSTGRES_TEST_URL
+cargo test -p kestrel-store-postgres
 cargo check -p kestrel --no-default-features
 cc -fsyntax-only -x c -include kestrel-ffi/include/kestrel.h /dev/null
 cargo build -p kestrel-ffi
@@ -543,6 +550,7 @@ PYTHONPATH=bindings/python python3 bindings/python/example.py
 PYTHONPATH=bindings/python python3 bindings/python/example_async.py
 PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
 PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
+PYTHONPATH=bindings/python python3 bindings/python/example_resume.py
 cd bindings/python && python3 -m unittest test_contract.py
 cd bindings/go && go vet ./... && go test ./...
 cargo build -p kestrel-node
@@ -569,6 +577,7 @@ kestrel-ffi/
   include/      # C header
   src/          # opaque agent、callback、model/tool 适配
 kestrel-store-sqlite/ # 独立 SQLite SessionStore adapter
+kestrel-store-postgres/ # 独立 PostgreSQL SessionStore adapter
 kestrel-contract/ # 共享配置 schema、capability、golden fixtures
 kestrel-node/    # napi-rs Rust addon
 bindings/python/
