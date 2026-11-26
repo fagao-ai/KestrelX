@@ -3,8 +3,8 @@ use std::{sync::Arc, time::Duration};
 use kestrel::mcp::{McpClient, McpHttpClient, McpHttpConfig, McpServerConfig};
 use kestrel::skills::SkillRegistry;
 use kestrel::{
-    Agent, EventSink, InMemoryMemory, Memory, Model, OpenAiCompatible, SessionStore,
-    SlidingWindowCompressor, SubAgentTool, SummarizingCompressor, TodoList,
+    Agent, EventSink, InMemoryMemory, Memory, Model, SessionStore, SlidingWindowCompressor,
+    SubAgentTool, SummarizingCompressor, TodoList,
 };
 pub(crate) use kestrel_contract::AgentConfig as Settings;
 use kestrel_contract::{
@@ -45,6 +45,9 @@ impl McpConnection {
 pub(crate) fn capabilities() -> CapabilitySet {
     CapabilitySet::new([
         Capability::OpenAi,
+        Capability::OpenAiResponses,
+        Capability::Anthropic,
+        Capability::Gemini,
         Capability::CustomModel,
         Capability::Streaming,
         Capability::Todo,
@@ -70,7 +73,7 @@ pub(crate) fn parse_settings(
 }
 
 pub(crate) trait SettingsExt {
-    fn openai_model(&self) -> Result<Arc<dyn Model>, String>;
+    fn provider_model(&self) -> Result<Arc<dyn Model>, String>;
     fn callback_model(
         &self,
         callback: ModelCallback,
@@ -91,31 +94,12 @@ pub(crate) trait SettingsExt {
 }
 
 impl SettingsExt for Settings {
-    fn openai_model(&self) -> Result<Arc<dyn Model>, String> {
-        let mut builder = OpenAiCompatible::builder(&self.openai.model);
-        if let Some(api_key) = &self.openai.api_key {
-            builder = builder.api_key(api_key);
-        } else if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
-            builder = builder.api_key(api_key);
-        }
-        if let Some(base_url) = &self.openai.base_url {
-            builder = builder.base_url(base_url);
-        } else if let Ok(base_url) = std::env::var("OPENAI_BASE_URL") {
-            builder = builder.base_url(base_url);
-        }
-        if let Some(tokens) = self.openai.context_window {
-            builder = builder.context_window(tokens);
-        }
-        if let Some(seconds) = self.openai.timeout_seconds {
-            builder = builder.timeout(Duration::from_secs(seconds));
-        }
-        if let Some(include_usage) = self.openai.stream_usage {
-            builder = builder.stream_usage(include_usage);
-        }
-        let model = builder
+    fn provider_model(&self) -> Result<Arc<dyn Model>, String> {
+        let config = self.provider_config();
+        let kind = config.kind;
+        config
             .build()
-            .map_err(|error| format!("failed to build OpenAI provider: {error}"))?;
-        Ok(Arc::new(model))
+            .map_err(|error| format!("failed to build {kind} provider: {error}"))
     }
 
     fn callback_model(
@@ -125,7 +109,7 @@ impl SettingsExt for Settings {
     ) -> Arc<dyn Model> {
         Arc::new(CallbackModel::new(
             callback_model_name(self),
-            self.context_window.or(self.openai.context_window),
+            self.context_window.or(self.model_context_window()),
             callback,
             tracker,
         ))
@@ -138,7 +122,7 @@ impl SettingsExt for Settings {
     ) -> Arc<dyn Model> {
         Arc::new(CallbackModel::new_streaming(
             callback_model_name(self),
-            self.context_window.or(self.openai.context_window),
+            self.context_window.or(self.model_context_window()),
             callback,
             tracker,
         ))
@@ -243,11 +227,7 @@ impl SettingsExt for Settings {
 }
 
 fn callback_model_name(settings: &Settings) -> String {
-    if settings.openai.model.trim().is_empty() {
-        "callback".to_owned()
-    } else {
-        settings.openai.model.clone()
-    }
+    settings.model_name().to_owned()
 }
 
 fn load_skills(settings: &SkillsSettings) -> Result<SkillRegistry, String> {

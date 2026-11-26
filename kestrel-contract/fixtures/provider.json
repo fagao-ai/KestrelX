@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "provider": {
+    "kind": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "base_url": "https://api.anthropic.com",
+    "api_version": "2023-06-01",
+    "context_window": 200000,
+    "timeout_seconds": 120,
+    "headers": {
+      "X-Kestrel-Test": "provider-fixture"
+    }
+  }
+}

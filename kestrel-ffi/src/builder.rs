@@ -30,7 +30,7 @@ pub struct KestrelAgentBuilder {
 }
 
 enum ModelSource {
-    OpenAi,
+    BuiltIn,
     Callback(ModelCallback),
     StreamingCallback(StreamingModelCallback),
 }
@@ -54,7 +54,7 @@ unsafe fn builder_mut<'a>(
     unsafe { builder.as_mut() }.ok_or_else(|| "agent builder must not be NULL".to_owned())
 }
 
-/// Creates a builder for an OpenAI-compatible agent.
+/// Creates a builder for a built-in HTTP provider agent.
 ///
 /// # Safety
 ///
@@ -69,7 +69,7 @@ pub unsafe extern "C" fn kestrel_agent_builder_new(
     let result = ffi_catch(|| {
         let config_json = unsafe { required_string(config_json, "config_json") }?;
         let settings = parse_settings(&config_json, false)?;
-        Ok(KestrelAgentBuilder::new(settings, ModelSource::OpenAi))
+        Ok(KestrelAgentBuilder::new(settings, ModelSource::BuiltIn))
     });
     match result {
         Ok(builder) => Box::into_raw(Box::new(builder)),
@@ -256,7 +256,7 @@ pub unsafe extern "C" fn kestrel_agent_builder_build(
             .ok_or_else(|| "agent builder was already used".to_owned())?;
         let tracker = builder.tracker.clone();
         let model = match model_source {
-            ModelSource::OpenAi => settings.openai_model()?,
+            ModelSource::BuiltIn => settings.provider_model()?,
             ModelSource::Callback(callback) => settings.callback_model(callback, tracker.clone()),
             ModelSource::StreamingCallback(callback) => {
                 settings.streaming_callback_model(callback, tracker.clone())

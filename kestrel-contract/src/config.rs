@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use kestrel::{MemoryCategory, MemoryOptions, ToolChoice, ToolConcurrency};
+use kestrel::{
+    MemoryCategory, MemoryOptions, ProviderConfig, ProviderKind, ToolChoice, ToolConcurrency,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{Capability, CapabilitySet, ContractError, SCHEMA_VERSION};
@@ -53,6 +55,8 @@ pub struct AgentConfig {
     pub mcp_servers: Vec<McpServerSettings>,
     /// OpenAI-compatible provider settings.
     pub openai: OpenAiSettings,
+    /// Built-in provider selection. Overrides `openai` when present.
+    pub provider: Option<ProviderConfig>,
 }
 
 impl Default for AgentConfig {
@@ -80,6 +84,7 @@ impl Default for AgentConfig {
             skills: None,
             mcp_servers: Vec::new(),
             openai: OpenAiSettings::default(),
+            provider: None,
         }
     }
 }
@@ -133,7 +138,17 @@ impl AgentConfig {
         capabilities.push(if has_custom_model {
             Capability::CustomModel
         } else {
-            Capability::OpenAi
+            match self
+                .provider
+                .as_ref()
+                .map(|provider| provider.kind)
+                .unwrap_or(ProviderKind::OpenAiChat)
+            {
+                ProviderKind::OpenAiChat => Capability::OpenAi,
+                ProviderKind::OpenAiResponses => Capability::OpenAiResponses,
+                ProviderKind::Anthropic => Capability::Anthropic,
+                ProviderKind::Gemini => Capability::Gemini,
+            }
         });
         if self.streaming {
             capabilities.push(Capability::Streaming);
@@ -199,6 +214,41 @@ impl AgentConfig {
             max_context_tokens: self.memory.max_context_tokens,
             read_categories: self.memory.read_categories.clone(),
             write_category: self.memory.write_category.clone(),
+        }
+    }
+
+    /// Returns the selected provider, falling back to legacy `openai` settings.
+    pub fn provider_config(&self) -> ProviderConfig {
+        self.provider.clone().unwrap_or_else(|| ProviderConfig {
+            kind: ProviderKind::OpenAiChat,
+            model: self.openai.model.clone(),
+            api_key: self.openai.api_key.clone(),
+            base_url: self.openai.base_url.clone(),
+            api_version: None,
+            context_window: self.openai.context_window,
+            timeout_seconds: self.openai.timeout_seconds,
+            stream_usage: self.openai.stream_usage,
+            headers: BTreeMap::new(),
+        })
+    }
+
+    /// Model name used for diagnostics and callback-only configurations.
+    pub fn model_name(&self) -> &str {
+        self.provider
+            .as_ref()
+            .map(|provider| provider.model.as_str())
+            .filter(|model| !model.trim().is_empty())
+            .or_else(|| {
+                (!self.openai.model.trim().is_empty()).then_some(self.openai.model.as_str())
+            })
+            .unwrap_or("callback")
+    }
+
+    /// Context window declared by the selected model configuration.
+    pub fn model_context_window(&self) -> Option<usize> {
+        match &self.provider {
+            Some(provider) => provider.context_window,
+            None => self.openai.context_window,
         }
     }
 
@@ -283,12 +333,23 @@ impl AgentConfig {
         for (index, server) in self.mcp_servers.iter().enumerate() {
             server.validate(index)?;
         }
-        if !has_custom_model && self.openai.model.trim().is_empty() {
+        if let Some(provider) = &self.provider {
+            provider
+                .validate()
+                .map_err(|error| invalid(&error.to_string()))?;
+        }
+        if !has_custom_model
+            && self
+                .provider
+                .as_ref()
+                .map(|provider| provider.model.trim().is_empty())
+                .unwrap_or_else(|| self.openai.model.trim().is_empty())
+        {
             return Err(invalid(
-                "openai.model is required when no custom model is supplied",
+                "provider.model or openai.model is required when no custom model is supplied",
             ));
         }
-        if self.openai.timeout_seconds == Some(0) {
+        if self.provider.is_none() && self.openai.timeout_seconds == Some(0) {
             return Err(invalid("openai.timeout_seconds must be greater than zero"));
         }
         Ok(())
@@ -474,6 +535,9 @@ mod tests {
     fn all_capabilities() -> CapabilitySet {
         CapabilitySet::new([
             Capability::OpenAi,
+            Capability::OpenAiResponses,
+            Capability::Anthropic,
+            Capability::Gemini,
             Capability::CustomModel,
             Capability::Streaming,
             Capability::Todo,
@@ -512,6 +576,18 @@ mod tests {
         assert_eq!(
             memory.write_category.unwrap(),
             kestrel::MemoryCategory::project("kestrel")
+        );
+    }
+
+    #[test]
+    fn parses_provider_fixture() {
+        let config = AgentConfig::parse_json(include_str!("../fixtures/provider.json")).unwrap();
+        config.validate(false, &all_capabilities()).unwrap();
+        assert_eq!(config.provider_config().kind, ProviderKind::Anthropic);
+        assert!(
+            config
+                .required_capabilities(false)
+                .contains(Capability::Anthropic)
         );
     }
 
@@ -562,5 +638,56 @@ mod tests {
         config.tool_timeout_ms = None;
         config.max_tool_output_chars = Some(0);
         assert!(config.validate(false, &all_capabilities()).is_err());
+    }
+
+    #[test]
+    fn parses_explicit_provider_config() {
+        let config = AgentConfig::parse_json(
+            r#"{
+                "schema_version": 1,
+                "provider": {
+                    "kind": "gemini",
+                    "model": "gemini-2.5-pro",
+                    "api_key": "test"
+                }
+            }"#,
+        )
+        .unwrap();
+        config.validate(false, &all_capabilities()).unwrap();
+        assert!(
+            config
+                .required_capabilities(false)
+                .contains(Capability::Gemini)
+        );
+        assert_eq!(config.provider_config().kind, ProviderKind::Gemini);
+        assert_eq!(config.model_name(), "gemini-2.5-pro");
+    }
+
+    #[test]
+    fn provider_overrides_legacy_openai_model_requirement() {
+        let config = AgentConfig::parse_json(
+            r#"{
+                "schema_version": 1,
+                "openai": {"model": ""},
+                "provider": {"kind": "anthropic", "model": "claude-test"}
+            }"#,
+        )
+        .unwrap();
+        config.validate(false, &all_capabilities()).unwrap();
+        assert_eq!(config.provider_config().kind, ProviderKind::Anthropic);
+    }
+
+    #[test]
+    fn rejects_provider_without_binding_capability() {
+        let config = AgentConfig::parse_json(
+            r#"{
+                "schema_version": 1,
+                "provider": {"kind": "openai_responses", "model": "gpt-test"}
+            }"#,
+        )
+        .unwrap();
+        let supported = CapabilitySet::new([Capability::OpenAi, Capability::Streaming]);
+        let error = config.validate(false, &supported).unwrap_err();
+        assert!(error.to_string().contains("openai_responses"));
     }
 }

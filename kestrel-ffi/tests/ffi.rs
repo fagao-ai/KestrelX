@@ -1124,8 +1124,34 @@ fn exposes_versioned_contract_and_capabilities() {
             .unwrap()
             .contains(&json!("mcp_http"))
     );
+    for provider in ["openai_responses", "anthropic", "gemini"] {
+        assert!(
+            capabilities.as_array().unwrap().contains(&json!(provider)),
+            "missing capability {provider}"
+        );
+    }
     // SAFETY: ownership is released once.
     unsafe { kestrel_string_free(capabilities_ptr) };
+}
+
+#[test]
+fn builds_agents_for_all_builtin_providers() {
+    for kind in ["openai_chat", "openai_responses", "anthropic", "gemini"] {
+        let config = CString::new(
+            json!({
+                "schema_version": 1,
+                "provider": {"kind": kind, "model": "test-model"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut error = ptr::null_mut();
+        // SAFETY: config and error pointers are valid for this call.
+        let agent = unsafe { kestrel_agent_new(config.as_ptr(), &mut error) };
+        assert!(!agent.is_null(), "{kind}: {}", error_message(error));
+        // SAFETY: ownership is transferred exactly once.
+        unsafe { kestrel_agent_free(agent) };
+    }
 }
 
 #[test]
@@ -1134,6 +1160,18 @@ fn validates_shared_full_fixture() {
     let mut error = ptr::null_mut();
     // SAFETY: fixture and error pointers are valid.
     let status = unsafe { kestrel_validate_config(fixture.as_ptr(), 1, &mut error) };
+    assert_eq!(status, 0, "{}", error_message(error));
+}
+
+#[test]
+fn validates_shared_provider_fixture() {
+    let fixture = CString::new(include_str!(
+        "../../kestrel-contract/fixtures/provider.json"
+    ))
+    .unwrap();
+    let mut error = ptr::null_mut();
+    // SAFETY: fixture and error pointers are valid.
+    let status = unsafe { kestrel_validate_config(fixture.as_ptr(), 0, &mut error) };
     assert_eq!(status, 0, "{}", error_message(error));
 }
 

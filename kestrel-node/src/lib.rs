@@ -14,14 +14,13 @@ use kestrel::mcp::{McpClient, McpHttpClient, McpHttpConfig, McpServerConfig};
 use kestrel::skills::SkillRegistry;
 use kestrel::{
     Agent as CoreAgent, AgentEvent, ContextCompressor, EventSink, InMemoryMemory, Memory,
-    MemoryEntry, MemoryQuery, Model, ModelDelta, ModelRequest, ModelResponse, OpenAiCompatible,
-    Result as CoreResult, ResumeOptions, RunOptions, Session, SessionStore,
-    SlidingWindowCompressor, SubAgentTool, SummarizingCompressor, TodoList, Tool, ToolContext,
-    ToolOutput, ToolSpec,
+    MemoryEntry, MemoryQuery, Model, ModelDelta, ModelRequest, ModelResponse, Result as CoreResult,
+    ResumeOptions, RunOptions, Session, SessionStore, SlidingWindowCompressor, SubAgentTool,
+    SummarizingCompressor, TodoList, Tool, ToolContext, ToolOutput, ToolSpec,
 };
 use kestrel_contract::{
     AgentConfig as WireConfig, Capability, CapabilitySet, CompressionKind, McpServerSettings,
-    OpenAiSettings, SCHEMA_VERSION,
+    SCHEMA_VERSION,
 };
 use napi::{
     Error, Result, Status,
@@ -69,6 +68,9 @@ fn node_error(error: impl std::fmt::Display) -> Error {
 fn node_capabilities() -> CapabilitySet {
     CapabilitySet::new([
         Capability::OpenAi,
+        Capability::OpenAiResponses,
+        Capability::Anthropic,
+        Capability::Gemini,
         Capability::CustomModel,
         Capability::Streaming,
         Capability::Todo,
@@ -887,15 +889,11 @@ fn build_agent(
 ) -> CoreResult<Agent> {
     let model = match model {
         Some(callback) => Arc::new(JsModel {
-            name: if config.openai.model.is_empty() {
-                "js-model".to_owned()
-            } else {
-                config.openai.model.clone()
-            },
-            context_window: config.context_window.or(config.openai.context_window),
+            name: config.model_name().to_owned(),
+            context_window: config.context_window.or(config.model_context_window()),
             callback,
         }) as Arc<dyn Model>,
-        None => Arc::new(build_openai(&config.openai)?) as Arc<dyn Model>,
+        None => config.provider_config().build()?,
     };
 
     let mut builder = CoreAgent::builder(model.clone())
@@ -1048,28 +1046,4 @@ async fn connect_mcp_server(
         let tools = client.tools().await?;
         Ok((NodeMcpClient::Stdio(client), tools))
     }
-}
-
-fn build_openai(settings: &OpenAiSettings) -> CoreResult<OpenAiCompatible> {
-    let mut builder = OpenAiCompatible::builder(&settings.model);
-    if let Some(api_key) = &settings.api_key {
-        builder = builder.api_key(api_key);
-    } else if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
-        builder = builder.api_key(api_key);
-    }
-    if let Some(base_url) = &settings.base_url {
-        builder = builder.base_url(base_url);
-    } else if let Ok(base_url) = std::env::var("OPENAI_BASE_URL") {
-        builder = builder.base_url(base_url);
-    }
-    if let Some(tokens) = settings.context_window {
-        builder = builder.context_window(tokens);
-    }
-    if let Some(seconds) = settings.timeout_seconds {
-        builder = builder.timeout(Duration::from_secs(seconds));
-    }
-    if let Some(stream_usage) = settings.stream_usage {
-        builder = builder.stream_usage(stream_usage);
-    }
-    builder.build()
 }

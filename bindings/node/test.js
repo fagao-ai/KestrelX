@@ -20,6 +20,24 @@ test('contract version and capabilities', () => {
   assert.ok(capabilities().includes('memory_store'));
   assert.ok(capabilities().includes('mcp_http'));
   assert.ok(capabilities().includes('mcp_stdio'));
+  assert.ok(capabilities().includes('openai_responses'));
+  assert.ok(capabilities().includes('anthropic'));
+  assert.ok(capabilities().includes('gemini'));
+});
+
+test('creates agents with every built-in provider protocol', () => {
+  for (const kind of [
+    'openai_chat',
+    'openai_responses',
+    'anthropic',
+    'gemini',
+  ]) {
+    const agent = createAgent({
+      schema_version: 1,
+      provider: { kind, model: 'test-model' },
+    });
+    agent.close();
+  }
 });
 
 test('sync createAgent directs MCP config to createAgentAsync', () => {
@@ -42,6 +60,17 @@ test('validates shared fixture', () => {
     )
   );
   validateConfig(fixture, false);
+
+  const providerFixture = JSON.parse(
+    fs.readFileSync(
+      path.join(
+        __dirname,
+        '../../kestrel-contract/fixtures/provider.json'
+      ),
+      'utf8'
+    )
+  );
+  validateConfig(providerFixture, false);
 });
 
 test('JavaScript model, tool, and streaming events', async () => {

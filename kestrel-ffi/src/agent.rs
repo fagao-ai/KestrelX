@@ -121,7 +121,7 @@ pub(crate) unsafe fn agent_ref<'a>(agent: *mut KestrelAgent) -> Result<&'a Kestr
     unsafe { agent.as_ref() }.ok_or_else(|| "agent must not be NULL".to_owned())
 }
 
-/// Builds an OpenAI-compatible agent from config JSON.
+/// Builds an agent with a built-in HTTP provider from config JSON.
 ///
 /// # Safety
 ///
@@ -138,7 +138,7 @@ pub unsafe extern "C" fn kestrel_agent_new(
         // SAFETY: config_json is required by the C contract.
         let config_json = unsafe { required_string(config_json, "config_json") }?;
         let settings = parse_settings(&config_json, false)?;
-        let model = settings.openai_model()?;
+        let model = settings.provider_model()?;
         build_agent(
             settings,
             model,

@@ -124,6 +124,25 @@ export interface McpServerConfig {
   client_version?: string;
 }
 
+export type ProviderKind =
+  | 'openai_chat'
+  | 'openai'
+  | 'openai_responses'
+  | 'anthropic'
+  | 'gemini';
+
+export interface ProviderConfig {
+  kind: ProviderKind;
+  model: string;
+  api_key?: string;
+  base_url?: string;
+  api_version?: string;
+  context_window?: number;
+  timeout_seconds?: number;
+  stream_usage?: boolean;
+  headers?: Record<string, string>;
+}
+
 export declare function contractVersion(): number;
 export declare function capabilities(): string[];
 export declare function validateConfig(

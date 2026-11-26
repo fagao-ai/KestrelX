@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 pub enum Capability {
     /// Built-in OpenAI-compatible provider.
     OpenAi,
+    /// Built-in OpenAI Responses API provider.
+    OpenAiResponses,
+    /// Built-in Anthropic Messages API provider.
+    Anthropic,
+    /// Built-in Gemini Generative Language API provider.
+    Gemini,
     /// Host-language custom model callback.
     CustomModel,
     /// Incremental model output.
@@ -41,6 +47,9 @@ impl Capability {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
+            Self::OpenAiResponses => "openai_responses",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
             Self::CustomModel => "custom_model",
             Self::Streaming => "streaming",
             Self::Todo => "todo",

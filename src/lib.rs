@@ -23,7 +23,7 @@
 //! ```
 //!
 //! Optional integrations are feature-gated: `openai` (default), `subagent`
-//! (default), `mcp`, `skills`, and `todo`.
+//! (default), `anthropic`, `gemini`, `mcp`, `skills`, and `todo`.
 //!
 //! Streaming providers can override [`Model::complete_stream`]. The agent
 //! forwards text and tool-call fragments through
@@ -41,6 +41,7 @@ mod event;
 mod memory;
 mod message;
 mod model;
+mod provider_config;
 mod session;
 mod tool;
 mod util;
@@ -79,6 +80,7 @@ pub use memory::{
 };
 pub use message::{ContentPart, FinishReason, Message, Role, ToolCall, Usage};
 pub use model::{Model, ModelDelta, ModelRequest, ModelResponse, ToolChoice};
+pub use provider_config::{ProviderConfig, ProviderKind};
 pub use session::{
     InMemorySessionStore, RunCheckpoint, RunPhase, SESSION_SCHEMA_VERSION, Session, SessionStore,
 };

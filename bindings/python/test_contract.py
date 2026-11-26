@@ -15,6 +15,9 @@ class ContractTests(unittest.TestCase):
         capabilities = kestrel.capabilities()
         self.assertIn("streaming", capabilities)
         self.assertIn("mcp_http", capabilities)
+        self.assertIn("openai_responses", capabilities)
+        self.assertIn("anthropic", capabilities)
+        self.assertIn("gemini", capabilities)
 
     def test_shared_fixture(self) -> None:
         fixture = (
@@ -24,6 +27,15 @@ class ContractTests(unittest.TestCase):
             / "full.json"
         )
         kestrel.validate_config(json.loads(fixture.read_text()), True)
+
+    def test_provider_fixture(self) -> None:
+        fixture = (
+            Path(__file__).resolve().parents[2]
+            / "kestrel-contract"
+            / "fixtures"
+            / "provider.json"
+        )
+        kestrel.validate_config(json.loads(fixture.read_text()), False)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ pub use config::{
     OpenAiSettings, SkillsSettings, SubagentSettings,
 };
 pub use error::ContractError;
+pub use kestrel::{ProviderConfig, ProviderKind};
 
 /// Current configuration schema version.
 pub const SCHEMA_VERSION: u32 = 1;

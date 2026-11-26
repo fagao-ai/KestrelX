@@ -113,7 +113,7 @@ char *kestrel_string_new(const char *value);
 void kestrel_string_free(char *value);
 
 /*
- * Builds an OpenAI-compatible agent from config JSON.
+ * Builds an agent with a built-in HTTP provider from config JSON.
  * On failure returns NULL and, when error is non-NULL, stores an allocated
  * error string in *error that must be freed with kestrel_string_free.
  */
