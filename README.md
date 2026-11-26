@@ -179,8 +179,28 @@ let agent = Agent::builder(model)
 和 `InMemoryMemory`，不绑定数据库依赖，也不负责第三方 schema migration。
 
 `Session` 带 `schema_version`、`revision` 和可选的 `active_run`。数据库 adapter 应保存
-完整的版本化 JSON/BLOB，并用 `revision` 做乐观并发控制；官方 SQLite/Postgres adapter
-未来会作为独立 crate 发布。
+完整的版本化 JSON/BLOB，并用 `revision` 做乐观并发控制。官方 adapter 以独立 crate
+发布：SQLite 已提供，Postgres 以后按同样边界增加；核心 `kestrel` 不依赖 SQLite。
+
+```toml
+[dependencies]
+kestrel = { path = "." }
+kestrel-store-sqlite = { path = "./kestrel-store-sqlite" }
+```
+
+```rust
+use std::sync::Arc;
+use kestrel_store_sqlite::SqliteSessionStore;
+
+let sessions = Arc::new(SqliteSessionStore::open("kestrel.sqlite")?);
+let agent = Agent::builder(model)
+    .session_store(sessions)
+    .session_id("user-42")
+    .build()?;
+```
+
+`SqliteSessionStore` 使用自己的 `PRAGMA user_version` migration，保存完整 Session JSON，
+并在 `BEGIN IMMEDIATE` 事务中拒绝旧 revision 覆盖新 revision。
 
 `agent.reset()` 清空当前历史但保留 session ID；`agent.delete_session()` 会同时删除
 持久化记录并清空本地历史，下一次 run 使用相同 ID 从空会话开始。
@@ -482,6 +502,7 @@ Node SDK 的同步 `createAgent()` 不连接 MCP；含 `mcp_servers` 时使用
 
 ```text
 kestrel             # 核心 Rust library
+kestrel-store-sqlite # 独立 SQLite SessionStore adapter
 kestrel-ffi         # C ABI + opaque agent + callback runtime
 kestrel-contract    # 版本化配置 schema 与 capability 校验
 bindings/python     # ctypes 参考 SDK
@@ -514,6 +535,7 @@ cargo fmt --all -- --check
 bash scripts/check-line-limits.sh
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo test --workspace --all-features
+cargo test -p kestrel-store-sqlite
 cargo check -p kestrel --no-default-features
 cc -fsyntax-only -x c -include kestrel-ffi/include/kestrel.h /dev/null
 cargo build -p kestrel-ffi
@@ -546,6 +568,7 @@ src/
 kestrel-ffi/
   include/      # C header
   src/          # opaque agent、callback、model/tool 适配
+kestrel-store-sqlite/ # 独立 SQLite SessionStore adapter
 kestrel-contract/ # 共享配置 schema、capability、golden fixtures
 kestrel-node/    # napi-rs Rust addon
 bindings/python/
