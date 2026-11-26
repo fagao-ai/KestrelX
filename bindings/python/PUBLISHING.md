@@ -3,6 +3,40 @@
 The distribution name is `kestrel-agent-core`; the import package is
 `kestrel_agent_core`.
 
+## GitHub Actions release
+
+The `Python Release` workflow uses PyPI Trusted Publishing, so no API token or
+repository secret is needed.
+
+Before the first run, configure a pending trusted publisher:
+
+- PyPI project name: `kestrel-agent-core`
+- GitHub owner: `fagao-ai`
+- Repository: `kestrel`
+- Workflow: `python-release.yml`
+- Environment: `pypi`
+
+For a TestPyPI rehearsal, add the same pending publisher on TestPyPI with
+environment `testpypi`. Then create matching GitHub environments under
+`Settings -> Environments` (`pypi` and optionally `testpypi`).
+
+The workflow builds the sdist and macOS arm64/x86_64 wheels. Linux and Windows
+currently install from the sdist and therefore need a Rust toolchain; add
+manylinux and Windows wheel jobs before advertising broad platform support.
+
+Run the workflow manually and choose `build-only` to verify every build without
+uploading. Then choose `testpypi`. After the package is verified there, either
+run it again with `pypi`, or publish a tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Tag pushes and manual `pypi` runs publish to the production index. PyPI
+versions are immutable, so bump `bindings/python/kestrel_agent_core/_version.py`
+for every release.
+
 ## Build
 
 ```bash

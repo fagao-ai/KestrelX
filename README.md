@@ -574,6 +574,10 @@ with Agent({"provider": {"kind": "anthropic", "model": "claude-sonnet-4-5"}}) as
     print(agent.run("Hello")["text"])
 ```
 
+仓库包含 `.github/workflows/python-release.yml`，通过 PyPI Trusted Publishing
+（OIDC，无需在仓库或 Secret 中保存 API token）构建并发布 sdist 与 macOS wheels。
+具体配置和 tag 发布流程见 `bindings/python/PUBLISHING.md`。
+
 源码开发模式：
 
 ```bash
