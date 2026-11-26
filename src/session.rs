@@ -290,6 +290,24 @@ mod tests {
         assert!(decoded.tool_started());
         assert_eq!(decoded.pending_tool_call().unwrap().id, "call-1");
     }
+
+    #[tokio::test]
+    async fn in_memory_store_rejects_stale_revisions() {
+        let store = InMemorySessionStore::new();
+        let mut session = Session::with_id("conflict");
+        session.revision = 2;
+        store.save(&session).await.unwrap();
+
+        session.revision = 1;
+        assert!(matches!(
+            store.save(&session).await,
+            Err(Error::SessionConflict {
+                stored_revision: 2,
+                provided_revision: 1,
+                ..
+            })
+        ));
+    }
 }
 
 /// Persistence for conversations.
@@ -340,10 +358,17 @@ impl SessionStore for InMemorySessionStore {
     }
 
     async fn save(&self, session: &Session) -> Result<()> {
-        self.sessions
-            .write()
-            .await
-            .insert(session.id.clone(), session.clone());
+        let mut sessions = self.sessions.write().await;
+        if let Some(stored) = sessions.get(&session.id)
+            && session.revision < stored.revision
+        {
+            return Err(Error::SessionConflict {
+                id: session.id.clone(),
+                stored_revision: stored.revision,
+                provided_revision: session.revision,
+            });
+        }
+        sessions.insert(session.id.clone(), session.clone());
         Ok(())
     }
 

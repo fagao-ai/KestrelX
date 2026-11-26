@@ -46,6 +46,19 @@ pub enum Error {
     #[error("session `{0}` not found")]
     SessionNotFound(String),
 
+    /// A session write tried to replace a newer persisted revision.
+    #[error(
+        "session `{id}` revision conflict: stored revision {stored_revision}, provided {provided_revision}"
+    )]
+    SessionConflict {
+        /// Session identifier.
+        id: String,
+        /// Revision already persisted.
+        stored_revision: u64,
+        /// Revision supplied by the caller.
+        provided_revision: u64,
+    },
+
     /// The session contains an interrupted run that must be resumed or reset.
     #[error("session has active run `{0}`; call resume() or reset() first")]
     ActiveRun(String),
@@ -73,6 +86,10 @@ pub enum Error {
         /// Version supported by this binary.
         supported: u32,
     },
+
+    /// A storage adapter failed.
+    #[error("storage error: {0}")]
+    Storage(String),
 
     /// Long-term memory failed.
     #[error("memory error: {0}")]
