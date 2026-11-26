@@ -1,0 +1,13 @@
+include Cargo.toml
+include Cargo.lock
+include MANIFEST.in
+include setup.py
+recursive-include src *.rs
+recursive-include examples *.rs
+recursive-include scripts *.sh
+recursive-include kestrel-contract Cargo.toml *.md *.rs *.json
+recursive-include kestrel-ffi Cargo.toml *.md *.rs *.h
+recursive-include kestrel-node Cargo.toml build.rs *.rs
+recursive-include kestrel-store-postgres Cargo.toml *.md *.rs
+recursive-include kestrel-store-sqlite Cargo.toml *.md *.rs
+recursive-include bindings/python *.py *.md py.typed

@@ -1,24 +1,45 @@
-# Python binding
+# Kestrel Agent Core for Python
 
-This is a small reference binding implemented with `ctypes`.
+Kestrel is a scenario-agnostic agent runtime with a Rust core and a Python
+`ctypes` binding. Published platform wheels include the native library.
+
+```bash
+pip install kestrel-agent-core
+```
+
+```python
+from kestrel_agent_core import Agent
+
+with Agent({
+    "provider": {
+        "kind": "anthropic",
+        "model": "claude-sonnet-4-5",
+    },
+}) as agent:
+    print(agent.run("Hello")["text"])
+```
+
+The distribution name is `kestrel-agent-core`; the import name is
+`kestrel_agent_core`.
+
+## Development install
+
+From a source checkout, build the native library and put the Python package on
+`PYTHONPATH`:
 
 ```bash
 cargo build -p kestrel-ffi
 PYTHONPATH=bindings/python python3 bindings/python/example.py
-PYTHONPATH=bindings/python python3 bindings/python/example_async.py
-PYTHONPATH=bindings/python python3 bindings/python/example_persistence.py
-PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
-PYTHONPATH=bindings/python python3 bindings/python/example_resume.py
 ```
 
-Set `KESTREL_FFI_PATH` when the shared library is not under `target/debug` or
-`target/release`.
+Set `KESTREL_FFI_PATH` to load a shared library outside the package or workspace
+`target/` directory.
 
-The example uses a Python model callback and a Python echo tool, so it runs
-offline. For a built-in provider:
+The basic example uses a Python model callback and a Python echo tool, so it
+runs offline. For a built-in provider:
 
 ```python
-from kestrel import Agent
+from kestrel_agent_core import Agent
 
 with Agent({
     "system_prompt": "Be concise.",
@@ -70,7 +91,7 @@ See `example_persistence.py` for an in-memory database example.
 Contract helpers mirror the C ABI:
 
 ```python
-import kestrel
+import kestrel_agent_core as kestrel
 
 kestrel.contract_version()          # 1
 kestrel.capabilities()              # capability names

@@ -1,10 +1,10 @@
-"""Small ctypes binding for the Kestrel C ABI.
+"""Python binding for the Kestrel agent core.
 
-Build the shared library first:
+Published wheels bundle the native library. Source checkouts can build it with:
 
     cargo build -p kestrel-ffi
 
-Then set KESTREL_FFI_PATH if auto-discovery cannot find the library.
+Set KESTREL_FFI_PATH to load a different shared library.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
+
+from ._version import __version__
 
 
 EventCallback = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p)
@@ -60,17 +62,27 @@ class KestrelError(RuntimeError):
 
 
 def _candidate_libraries() -> list[Path]:
-    root = Path(__file__).resolve().parents[2]
     names = (
         "libkestrel_ffi.dylib",
         "libkestrel_ffi.so",
         "kestrel_ffi.dll",
     )
-    return [
+    package = Path(__file__).resolve().parent
+    candidates = [
+        package / "_native" / name
+        for name in names
+    ]
+    root = package
+    for parent in package.parents:
+        if (parent / "Cargo.toml").is_file() and (parent / "kestrel-ffi").is_dir():
+            root = parent
+            break
+    candidates.extend(
         root / "target" / profile / name
         for profile in ("debug", "release")
         for name in names
-    ]
+    )
+    return candidates
 
 
 def load_library(path: Optional[str] = None) -> ctypes.CDLL:
@@ -84,8 +96,8 @@ def load_library(path: Optional[str] = None) -> ctypes.CDLL:
     library_path = next((candidate for candidate in candidates if candidate.exists()), None)
     if library_path is None:
         raise KestrelError(
-            "kestrel_ffi shared library not found; run "
-            "`cargo build -p kestrel-ffi` or set KESTREL_FFI_PATH"
+            "kestrel_ffi shared library not found; install a platform wheel "
+            "or run `cargo build -p kestrel-ffi`, or set KESTREL_FFI_PATH"
         )
 
     library = ctypes.CDLL(str(library_path))

@@ -1,4 +1,7 @@
 /target
+dist/
+build/
+*.egg-info/
 .DS_Store
 __pycache__/
 *.pyc

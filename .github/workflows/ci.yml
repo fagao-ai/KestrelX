@@ -52,6 +52,9 @@ jobs:
       - run: PYTHONPATH=bindings/python python3 bindings/python/example_stream_model.py
       - run: PYTHONPATH=bindings/python python3 bindings/python/example_resume.py
       - run: cd bindings/python && python3 -m unittest test_contract.py
+      - run: python3 -m pip install build twine
+      - run: python3 -m build
+      - run: python3 -m twine check dist/*
       - run: test -z "$(gofmt -l bindings/go)"
       - run: cd bindings/go && go vet ./...
       - run: cd bindings/go && go test ./...

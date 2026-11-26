@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from kestrel import Agent
+from kestrel_agent_core import Agent
 
 
 class ResumeStore:

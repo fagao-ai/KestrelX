@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kestrel import Agent
+from kestrel_agent_core import Agent
 
 
 def model(request: dict) -> dict:
