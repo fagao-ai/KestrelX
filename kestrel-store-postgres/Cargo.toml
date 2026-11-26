@@ -1,0 +1,15 @@
+[package]
+name = "kestrel-store-postgres"
+version = "0.1.0"
+edition = "2024"
+description = "PostgreSQL SessionStore adapter for Kestrel"
+
+[dependencies]
+async-trait = "0.1"
+kestrel = { path = "..", default-features = false }
+serde_json = "1"
+sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }
