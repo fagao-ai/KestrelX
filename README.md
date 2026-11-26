@@ -2,7 +2,7 @@
 
 Kestrel 是一个场景无关、库优先的 Rust agent core。它不假设你在做编程助手、办公助手或客服机器人，只提供可组合的运行时原语：
 
-- LLM 抽象与 OpenAI-compatible 实现
+- LLM 抽象与 OpenAI Chat/Responses、Anthropic、Gemini 内置实现
 - 带取消、token 流、事件流和错误恢复的 agent loop
 - 工具注册与 JSON Schema 工具调用
 - 上下文压缩（滑动窗口 / LLM 摘要）
@@ -78,6 +78,33 @@ impl Model for MyModel {
 需要 token 级输出时可覆盖 `complete_stream`；默认实现会调用 `complete`，并把最终文本
 作为单个 delta 发出，因此老 provider 不需要改代码。核心不强制 reasoning、prompt cache
 等厂商差异。
+
+内置 provider：
+
+- `OpenAiCompatible`：OpenAI Chat Completions 兼容协议
+- `OpenAiResponses`：OpenAI Responses API
+- `Anthropic`：Anthropic Messages API
+- `Gemini`：Gemini `generateContent` / `streamGenerateContent`
+
+```rust
+use kestrel::{Anthropic, Gemini, OpenAiResponses};
+
+let responses = OpenAiResponses::from_env("gpt-5")?;
+let claude = Anthropic::from_env("claude-sonnet-4-5")?;
+let gemini = Gemini::from_env("gemini-2.5-pro")?;
+```
+
+```toml
+kestrel = { path = ".", features = ["anthropic", "gemini"] }
+```
+
+Anthropic 和 Gemini 分别由 `anthropic`、`gemini` feature 控制。provider 层统一处理
+tool schema、tool call、usage、SSE 增量、HTTP provider error 和流终止校验；agent loop
+不包含厂商协议分支。OpenAI Responses 使用 `store: false` 并按本地历史重放，不依赖服务端
+保存状态。
+
+各协议的高级能力（thinking、prompt cache、server tools、Gemini thought signature 等）
+目前还未全部暴露为强类型配置，部分原始响应保留在 `raw`。
 
 ### Tool
 
@@ -351,7 +378,9 @@ OpenAI 流式 usage 默认为开启；兼容服务不支持 `stream_options` 时
 
 | Feature | 默认 | 内容 |
 |---|---:|---|
-| `openai` | 是 | OpenAI-compatible Chat Completions provider |
+| `openai` | 是 | OpenAI Chat Completions + Responses API provider |
+| `anthropic` | 否 | Anthropic Messages API provider |
+| `gemini` | 否 | Gemini generateContent / streaming provider |
 | `todo` | 否 | `TodoList`、`todo_write`、`todo_read` |
 | `subagent` | 是 | `SubAgentTool`，每次调用使用隔离会话 |
 | `mcp` | 否 | stdio / Streamable HTTP MCP client |
@@ -563,9 +592,11 @@ bindings/node       # napi-rs 原生 addon
 
 ## 当前边界
 
-- OpenAI provider 和自定义 streaming model callback 都支持 token/tool-call 增量。
+- 内置 OpenAI/Anthropic/Gemini provider 和自定义 model callback 都支持 token/tool-call 增量。
 - 工具默认串行；显式启用 `parallel` 后才并发，且结果仍保持调用顺序。
-- OpenAI provider 使用 Chat Completions 兼容协议，不覆盖 Responses API。
+- 内置 provider 覆盖 Chat Completions、Responses、Anthropic Messages 和 Gemini
+  generateContent；支持文本、图片 URL/data URL、工具调用和流式输出。厂商特有的高级
+  参数尚未全部暴露为强类型 API。
 - MCP 支持 stdio 与 Streamable HTTP；sampling/roots 和 server-initiated requests 尚未支持。
 - FFI 同时提供同步 `run` 和异步 `start_run`；异步 handle 的 `poll/wait` 本身是同步
   C 调用，语言 SDK 应放到 worker 或 executor。

@@ -41,7 +41,7 @@ jobs:
       - run: cargo check -p kestrel --no-default-features
       - name: Check isolated features
         run: |
-          for feature in openai todo subagent mcp skills; do
+          for feature in openai anthropic gemini todo subagent mcp skills; do
             cargo check -p kestrel --no-default-features --features "$feature"
           done
       - run: cc -fsyntax-only -x c -include kestrel-ffi/include/kestrel.h /dev/null
