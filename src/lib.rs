@@ -47,6 +47,8 @@ mod util;
 
 #[cfg(feature = "anthropic")]
 mod anthropic;
+#[cfg(feature = "gemini")]
+mod gemini;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 #[cfg(feature = "openai")]
@@ -86,6 +88,8 @@ pub use tool::{
 
 #[cfg(feature = "anthropic")]
 pub use anthropic::{Anthropic, AnthropicBuilder};
+#[cfg(feature = "gemini")]
+pub use gemini::{Gemini, GeminiBuilder};
 #[cfg(feature = "openai")]
 pub use openai::{OpenAiCompatible, OpenAiCompatibleBuilder};
 #[cfg(feature = "openai")]
