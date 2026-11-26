@@ -11,6 +11,7 @@ use serde_json::{Map, Value, json};
 use crate::{
     ContentPart, Error, FinishReason, Message, Model, ModelDelta, ModelRequest, ModelResponse,
     Result, Role, ToolSpec, Usage,
+    provider::{ensure_success, json_response, read_sse},
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -114,18 +115,7 @@ impl Model for OpenAiCompatible {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
         let body = Self::request_body(&request, &self.model, false, false);
         let response = self.client.post(&self.endpoint).json(&body).send().await?;
-        let status = response.status();
-        let bytes = response.bytes().await?;
-
-        if !status.is_success() {
-            let body = String::from_utf8_lossy(&bytes);
-            return Err(Error::Provider {
-                status: status.as_u16(),
-                message: truncate(&body, 2_000),
-            });
-        }
-
-        let raw: Value = serde_json::from_slice(&bytes)?;
+        let raw = json_response(response).await?;
         let parsed: ChatResponse = serde_json::from_value(raw.clone())?;
         let choice = parsed.choices.into_iter().next().ok_or_else(|| {
             Error::InvalidModelResponse("provider returned no choices".to_owned())
@@ -170,44 +160,20 @@ impl Model for OpenAiCompatible {
         on_delta: &(dyn Fn(ModelDelta) + Send + Sync),
     ) -> Result<ModelResponse> {
         let body = Self::request_body(&request, &self.model, true, self.include_stream_usage);
-        let mut response = self.client.post(&self.endpoint).json(&body).send().await?;
-        let status = response.status();
-        if !status.is_success() {
-            let bytes = response.bytes().await?;
-            let body = String::from_utf8_lossy(&bytes);
-            return Err(Error::Provider {
-                status: status.as_u16(),
-                message: truncate(&body, 2_000),
-            });
-        }
+        let response = self.client.post(&self.endpoint).json(&body).send().await?;
+        let response = ensure_success(response).await?;
 
         let mut accumulator = StreamAccumulator::default();
-        let mut buffer = Vec::new();
-        let mut done = false;
         let mut saw_data = false;
-        while !done {
-            let Some(chunk) = response.chunk().await? else {
-                break;
-            };
-            buffer.extend_from_slice(&chunk);
-            for data in drain_sse_data(&mut buffer)? {
-                if data.trim() == "[DONE]" {
-                    done = true;
-                    break;
-                }
-                accumulator.consume(&data, on_delta)?;
-                saw_data = true;
+        read_sse(response, |data| {
+            if data.trim() == "[DONE]" {
+                return Ok(true);
             }
-        }
-        if !buffer.is_empty() {
-            buffer.push(b'\n');
-            for data in drain_sse_data(&mut buffer)? {
-                if data.trim() != "[DONE]" {
-                    accumulator.consume(&data, on_delta)?;
-                    saw_data = true;
-                }
-            }
-        }
+            accumulator.consume(data, on_delta)?;
+            saw_data = true;
+            Ok(false)
+        })
+        .await?;
         if !saw_data {
             return Err(Error::InvalidModelResponse(
                 "streaming response contained no SSE data events".to_owned(),
@@ -444,14 +410,6 @@ fn parse_finish_reason(reason: Option<&str>) -> FinishReason {
     }
 }
 
-fn truncate(value: &str, max_chars: usize) -> String {
-    let mut truncated = value.chars().take(max_chars).collect::<String>();
-    if value.chars().count() > max_chars {
-        truncated.push_str("...");
-    }
-    truncated
-}
-
 #[derive(Deserialize)]
 struct ChatResponse {
     model: Option<String>,
@@ -670,32 +628,6 @@ fn stream_text(value: Value) -> String {
     }
 }
 
-fn drain_sse_data(buffer: &mut Vec<u8>) -> Result<Vec<String>> {
-    let mut payloads = Vec::new();
-    let mut consumed = 0usize;
-
-    while let Some(relative) = buffer[consumed..].iter().position(|byte| *byte == b'\n') {
-        let end = consumed + relative;
-        let mut line = &buffer[consumed..end];
-        if line.ends_with(b"\r") {
-            line = &line[..line.len() - 1];
-        }
-        if let Some(payload) = line.strip_prefix(b"data:") {
-            let payload = payload.strip_prefix(b" ").unwrap_or(payload);
-            if !payload.is_empty() {
-                let payload = std::str::from_utf8(payload).map_err(|error| {
-                    Error::Protocol(format!("invalid UTF-8 in SSE stream: {error}"))
-                })?;
-                payloads.push(payload.to_owned());
-            }
-        }
-        consumed = end + 1;
-    }
-
-    buffer.drain(..consumed);
-    Ok(payloads)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -772,14 +704,6 @@ mod tests {
             parse_finish_reason(choice.finish_reason.as_deref()),
             FinishReason::ToolCalls
         );
-    }
-
-    #[test]
-    fn splits_sse_data_across_chunks() {
-        let mut buffer = b"event: message\ndata: {\"choices\":[]}\n\ndata: [DONE]\r\n".to_vec();
-        let payloads = drain_sse_data(&mut buffer).unwrap();
-        assert_eq!(payloads, vec!["{\"choices\":[]}", "[DONE]"]);
-        assert!(buffer.is_empty());
     }
 
     #[test]

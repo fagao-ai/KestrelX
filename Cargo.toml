@@ -29,7 +29,9 @@ uuid = { version = "1", features = ["serde", "v4"] }
 
 [features]
 default = ["openai", "subagent"]
-full = ["mcp", "openai", "skills", "subagent", "todo"]
+full = ["anthropic", "gemini", "mcp", "openai", "skills", "subagent", "todo"]
+anthropic = ["dep:reqwest"]
+gemini = ["dep:reqwest"]
 mcp = ["dep:reqwest", "tokio/io-util", "tokio/process"]
 openai = ["dep:reqwest"]
 skills = []

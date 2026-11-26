@@ -49,6 +49,8 @@ mod util;
 pub mod mcp;
 #[cfg(feature = "openai")]
 mod openai;
+#[cfg(any(feature = "anthropic", feature = "gemini", feature = "openai"))]
+mod provider;
 #[cfg(feature = "skills")]
 pub mod skills;
 #[cfg(feature = "subagent")]
