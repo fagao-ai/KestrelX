@@ -66,8 +66,8 @@ pub use context::{
 pub use error::{Error, Result};
 pub use event::{AgentEvent, AgentEventKind, EventSink, event_channel};
 pub use memory::{
-    InMemoryMemory, Memory, MemoryEntry, MemoryOptions, MemoryQuery, RecallTool, RememberTool,
-    memory_tools,
+    InMemoryMemory, Memory, MemoryCategory, MemoryEntry, MemoryOptions, MemoryQuery, RecallTool,
+    RememberTool, memory_tools, memory_tools_with_options,
 };
 pub use message::{ContentPart, FinishReason, Message, Role, ToolCall, Usage};
 pub use model::{Model, ModelDelta, ModelRequest, ModelResponse, ToolChoice};

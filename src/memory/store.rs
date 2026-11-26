@@ -107,6 +107,14 @@ impl Memory for InMemoryMemory {
                 if !tags_match {
                     return None;
                 }
+                if !query.categories.is_empty() && !query.categories.contains(&entry.category) {
+                    return None;
+                }
+                let category_rank = query
+                    .categories
+                    .iter()
+                    .position(|category| category == &entry.category)
+                    .unwrap_or(usize::MAX);
 
                 let text = entry.text.to_lowercase();
                 let mut score = 0usize;
@@ -146,20 +154,23 @@ impl Memory for InMemoryMemory {
                     }
                 }
 
-                (score > 0).then_some((score, entry.clone()))
+                (score > 0).then_some((score, category_rank, entry.clone()))
             })
             .collect::<Vec<_>>();
 
-        matches.sort_by(|(left_score, left), (right_score, right)| {
-            right_score
-                .cmp(left_score)
-                .then_with(|| right.created_at_ms.cmp(&left.created_at_ms))
-                .then_with(|| right.id.cmp(&left.id))
-        });
+        matches.sort_by(
+            |(left_score, left_rank, left), (right_score, right_rank, right)| {
+                right_score
+                    .cmp(left_score)
+                    .then_with(|| left_rank.cmp(right_rank))
+                    .then_with(|| right.created_at_ms.cmp(&left.created_at_ms))
+                    .then_with(|| right.id.cmp(&left.id))
+            },
+        );
         Ok(matches
             .into_iter()
             .take(query.limit)
-            .map(|(_, entry)| entry)
+            .map(|(_, _, entry)| entry)
             .collect())
     }
 }
@@ -189,6 +200,7 @@ mod tests {
 
         let results = memory
             .recall(&MemoryQuery {
+                categories: Vec::new(),
                 text: String::new(),
                 tags: vec!["launch".to_owned()],
                 limit: 5,
@@ -196,6 +208,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn filters_and_orders_memory_categories() {
+        let memory = InMemoryMemory::new();
+        memory
+            .remember(
+                MemoryEntry::new("Kestrel project decision")
+                    .with_category(crate::MemoryCategory::project("repo")),
+            )
+            .await
+            .unwrap();
+        memory
+            .remember(
+                MemoryEntry::new("Kestrel user preference")
+                    .with_category(crate::MemoryCategory::user("alice")),
+            )
+            .await
+            .unwrap();
+        memory
+            .remember(
+                MemoryEntry::new("Kestrel global note")
+                    .with_category(crate::MemoryCategory::global()),
+            )
+            .await
+            .unwrap();
+
+        let results = memory
+            .recall(&MemoryQuery::new("Kestrel").with_categories([
+                crate::MemoryCategory::project("repo"),
+                crate::MemoryCategory::user("alice"),
+            ]))
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].category.name, "project");
+        assert_eq!(results[1].category.name, "user");
     }
 
     #[tokio::test]

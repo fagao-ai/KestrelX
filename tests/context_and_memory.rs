@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use kestrel::{
     Agent, AgentEventKind, CompressionRequest, ContextCompressor, HeuristicTokenCounter,
-    InMemoryMemory, Memory, MemoryEntry, MemoryOptions, Message, Session, SlidingWindowCompressor,
-    SummarizingCompressor,
+    InMemoryMemory, Memory, MemoryCategory, MemoryEntry, MemoryOptions, Message, Session,
+    SlidingWindowCompressor, SummarizingCompressor,
 };
 use support::{ScriptedModel, text_response};
 
@@ -125,6 +125,7 @@ async fn injects_relevant_long_term_memory() {
             auto_recall: true,
             recall_limit: 3,
             max_context_tokens: 200,
+            ..Default::default()
         })
         .event_sink(Arc::new(sender))
         .build()
@@ -146,6 +147,56 @@ async fn injects_relevant_long_term_memory() {
         }
     }
     assert!(recalled);
+}
+
+#[tokio::test]
+async fn filters_long_term_memory_by_category() {
+    let memory = Arc::new(InMemoryMemory::new());
+    memory
+        .remember(
+            MemoryEntry::new("Project codename is Kestrel")
+                .with_category(MemoryCategory::project("repo-1")),
+        )
+        .await
+        .unwrap();
+    memory
+        .remember(
+            MemoryEntry::new("User prefers dark mode")
+                .with_category(MemoryCategory::user("user-1")),
+        )
+        .await
+        .unwrap();
+    memory
+        .remember(
+            MemoryEntry::new("Global memory should not be injected here")
+                .with_category(MemoryCategory::global()),
+        )
+        .await
+        .unwrap();
+
+    let model = Arc::new(ScriptedModel::new([text_response("ok")]));
+    let agent = Agent::builder(model.clone())
+        .memory(memory)
+        .memory_options(MemoryOptions {
+            read_categories: vec![
+                MemoryCategory::project("repo-1"),
+                MemoryCategory::user("user-1"),
+            ],
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+
+    agent.run("What is the project codename?").await.unwrap();
+    let memory_message = model.requests()[0]
+        .messages
+        .iter()
+        .find(|message| message.text().contains("<memory>"))
+        .expect("memory message")
+        .text();
+    assert!(memory_message.contains("[project:repo-1]"));
+    assert!(memory_message.contains("Kestrel"));
+    assert!(!memory_message.contains("Global memory"));
 }
 
 #[tokio::test]

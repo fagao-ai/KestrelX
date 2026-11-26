@@ -596,7 +596,9 @@ impl Agent {
             cancellable(
                 cancellation,
                 memory.recall(
-                    &MemoryQuery::new(query).with_limit(self.shared.memory_options.recall_limit),
+                    &MemoryQuery::new(query)
+                        .with_limit(self.shared.memory_options.recall_limit)
+                        .with_categories(self.shared.memory_options.read_categories.clone()),
                 ),
             )
             .await
@@ -612,7 +614,11 @@ impl Agent {
         let mut used = 0usize;
         let mut injected = 0usize;
         for entry in &entries {
-            let line = format!("- {}", entry.text);
+            let line = if entry.category.is_default() {
+                format!("- {}", entry.text)
+            } else {
+                format!("- [{}] {}", entry.category.label(), entry.text)
+            };
             let tokens = self.shared.token_counter.count_text(&line);
             if used.saturating_add(tokens) > self.shared.memory_options.max_context_tokens {
                 break;

@@ -5,7 +5,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::ToolConcurrency;
 use crate::{
     Agent, AgentConfig, ContextCompressor, EventSink, HeuristicTokenCounter, Memory, MemoryOptions,
-    Model, Session, SessionStore, TokenCounter, Tool, ToolRegistry, memory_tools,
+    Model, Session, SessionStore, TokenCounter, Tool, ToolRegistry, memory_tools_with_options,
 };
 
 use super::{AgentShared, AgentState};
@@ -280,7 +280,10 @@ impl AgentBuilder {
                     "memory tools require a Memory implementation".to_owned(),
                 )
             })?;
-            tools.extend(memory_tools(memory));
+            tools.extend(memory_tools_with_options(
+                memory,
+                self.memory_options.clone(),
+            ));
         }
         registry.register_all(tools)?;
 

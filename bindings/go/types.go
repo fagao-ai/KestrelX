@@ -163,20 +163,28 @@ type SessionStore interface {
 	Delete(sessionID string) error
 }
 
+// MemoryCategory namespaces one memory entry.
+type MemoryCategory struct {
+	Name    string `json:"name"`
+	OwnerID string `json:"owner_id,omitempty"`
+}
+
 // MemoryQuery is passed to long-term memory recall.
 type MemoryQuery struct {
-	Text  string   `json:"text"`
-	Tags  []string `json:"tags,omitempty"`
-	Limit int      `json:"limit"`
+	Categories []MemoryCategory `json:"categories,omitempty"`
+	Text       string           `json:"text"`
+	Tags       []string         `json:"tags,omitempty"`
+	Limit      int              `json:"limit"`
 }
 
 // MemoryEntry is one durable memory item.
 type MemoryEntry struct {
-	ID          string         `json:"id"`
-	Text        string         `json:"text"`
-	Tags        []string       `json:"tags,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
-	CreatedAtMS uint64         `json:"created_at_ms,omitempty"`
+	ID          string          `json:"id"`
+	Category    *MemoryCategory `json:"category,omitempty"`
+	Text        string          `json:"text"`
+	Tags        []string        `json:"tags,omitempty"`
+	Metadata    map[string]any  `json:"metadata,omitempty"`
+	CreatedAtMS uint64          `json:"created_at_ms,omitempty"`
 }
 
 // Memory is pluggable long-term memory.

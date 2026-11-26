@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use kestrel::{MemoryOptions, ToolChoice, ToolConcurrency};
+use kestrel::{MemoryCategory, MemoryOptions, ToolChoice, ToolConcurrency};
 use serde::{Deserialize, Serialize};
 
 use crate::{Capability, CapabilitySet, ContractError, SCHEMA_VERSION};
@@ -197,6 +197,8 @@ impl AgentConfig {
             auto_recall: self.memory.auto_recall,
             recall_limit: self.memory.recall_limit,
             max_context_tokens: self.memory.max_context_tokens,
+            read_categories: self.memory.read_categories.clone(),
+            write_category: self.memory.write_category.clone(),
         }
     }
 
@@ -243,6 +245,16 @@ impl AgentConfig {
         }
         if self.memory.tools && !self.memory.enabled {
             return Err(invalid("memory.tools requires memory.enabled"));
+        }
+        for category in self
+            .memory
+            .read_categories
+            .iter()
+            .chain(self.memory.write_category.iter())
+        {
+            if category.name.trim().is_empty() {
+                return Err(invalid("memory category name must not be empty"));
+            }
         }
         if let Some(compression) = &self.compression {
             if compression.max_tokens == 0 {
@@ -319,6 +331,10 @@ pub struct MemorySettings {
     pub recall_limit: usize,
     /// Maximum tokens injected per run.
     pub max_context_tokens: usize,
+    /// Memory categories read by automatic recall and memory tools.
+    pub read_categories: Vec<MemoryCategory>,
+    /// Category written by `memory_remember`.
+    pub write_category: Option<MemoryCategory>,
 }
 
 impl Default for MemorySettings {
@@ -329,6 +345,8 @@ impl Default for MemorySettings {
             auto_recall: true,
             recall_limit: 5,
             max_context_tokens: 2_000,
+            read_categories: Vec::new(),
+            write_category: None,
         }
     }
 }
@@ -489,6 +507,12 @@ mod tests {
         assert!(required.contains(Capability::McpStdio));
         assert!(required.contains(Capability::McpHttp));
         assert!(required.contains(Capability::CompressionSummarizing));
+        let memory = config.memory_options();
+        assert_eq!(memory.read_categories.len(), 3);
+        assert_eq!(
+            memory.write_category.unwrap(),
+            kestrel::MemoryCategory::project("kestrel")
+        );
     }
 
     #[test]
