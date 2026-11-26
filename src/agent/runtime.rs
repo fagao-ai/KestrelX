@@ -14,7 +14,7 @@ use tracing::Instrument;
 use crate::{
     Agent, AgentEvent, AgentEventKind, AgentOutput, CompressionRequest, Error, EventSink,
     MemoryQuery, Message, ModelRequest, Result, Role, RunCheckpoint, RunPhase,
-    SESSION_SCHEMA_VERSION, ToolCall, ToolContext, ToolOutput, Usage,
+    SESSION_SCHEMA_VERSION, ToolCall, ToolConcurrency, ToolContext, ToolOutput, Usage,
 };
 
 impl Agent {
@@ -226,25 +226,53 @@ impl Agent {
 
                     let turn = checkpoint.turn;
                     let mut results = completed_results;
-                    while results.len() < assistant.tool_calls.len() {
+                    if self.shared.config.tool_concurrency == ToolConcurrency::Parallel
+                        && results.len() < assistant.tool_calls.len()
+                    {
                         check_cancelled(cancellation)?;
-                        let call = assistant.tool_calls[results.len()].clone();
                         checkpoint.mark_tool_started();
                         self.persist_checkpoint(&checkpoint).await?;
 
-                        let output = self.execute_tool(turn, &call, cancellation, events).await?;
-                        let content = tool_content(&output);
-                        let result = Message::tool_result(call.id.clone(), content)
-                            .with_name(call.name.clone());
-                        checkpoint.push_tool_result(result.clone());
+                        let pending = &assistant.tool_calls[results.len()..];
+                        let outputs = futures::future::join_all(
+                            pending
+                                .iter()
+                                .map(|call| self.execute_tool(turn, call, cancellation, events)),
+                        )
+                        .await;
+                        for (call, output) in pending.iter().zip(outputs) {
+                            let output = output?;
+                            let result = tool_result_message(call, &output);
+                            events.emit(AgentEventKind::ToolCompleted {
+                                turn,
+                                call_id: call.id.clone(),
+                                name: call.name.clone(),
+                                output,
+                            });
+                            checkpoint.push_tool_result(result.clone());
+                            results.push(result);
+                        }
                         self.persist_checkpoint(&checkpoint).await?;
-                        events.emit(AgentEventKind::ToolCompleted {
-                            turn,
-                            call_id: call.id.clone(),
-                            name: call.name.clone(),
-                            output,
-                        });
-                        results.push(result);
+                    } else {
+                        while results.len() < assistant.tool_calls.len() {
+                            check_cancelled(cancellation)?;
+                            let call = assistant.tool_calls[results.len()].clone();
+                            checkpoint.mark_tool_started();
+                            self.persist_checkpoint(&checkpoint).await?;
+
+                            let output =
+                                self.execute_tool(turn, &call, cancellation, events).await?;
+                            let result = tool_result_message(&call, &output);
+                            checkpoint.push_tool_result(result.clone());
+                            self.persist_checkpoint(&checkpoint).await?;
+                            events.emit(AgentEventKind::ToolCompleted {
+                                turn,
+                                call_id: call.id.clone(),
+                                name: call.name.clone(),
+                                output,
+                            });
+                            results.push(result);
+                        }
                     }
 
                     history.push(assistant);
@@ -726,6 +754,10 @@ fn tool_content(output: &ToolOutput) -> String {
         (false, true) => format!("Tool error: {}", output.content),
         (false, false) => output.content.clone(),
     }
+}
+
+fn tool_result_message(call: &ToolCall, output: &ToolOutput) -> Message {
+    Message::tool_result(call.id.clone(), tool_content(output)).with_name(call.name.clone())
 }
 
 fn truncate_tool_output(mut output: ToolOutput, max_chars: Option<usize>) -> (ToolOutput, bool) {

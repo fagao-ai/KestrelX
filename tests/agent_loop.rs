@@ -4,13 +4,14 @@ use std::{sync::Arc, time::Duration};
 
 use kestrel::{
     Agent, AgentEventKind, Error, InMemorySessionStore, Message, ResumeOptions, RunCheckpoint,
-    RunOptions, SESSION_SCHEMA_VERSION, Session, SessionStore, ToolOutput, ToolSpec, Usage,
-    event_channel, function_tool,
+    RunOptions, SESSION_SCHEMA_VERSION, Session, SessionStore, ToolConcurrency, ToolOutput,
+    ToolSpec, Usage, event_channel, function_tool,
 };
 use serde_json::json;
 use support::{
     BlockingModel, ScriptedModel, StreamingModel, call, object_schema, text_response, tool_response,
 };
+use tokio::sync::Barrier;
 use tokio_util::sync::CancellationToken;
 
 fn echo_tool() -> Arc<dyn kestrel::Tool> {
@@ -249,6 +250,46 @@ async fn truncates_large_tool_outputs() {
     assert!(result.starts_with("abcdefghij"));
     assert!(result.contains("truncated 16 chars"));
     assert!(!result.contains("uvwxyz"));
+}
+
+#[tokio::test]
+async fn parallel_tool_execution_completes_concurrently() {
+    let barrier = Arc::new(Barrier::new(2));
+    let tool = function_tool(
+        ToolSpec::new("barrier", "Wait for concurrent peers", object_schema()),
+        move |_arguments, _context| {
+            let barrier = barrier.clone();
+            async move {
+                barrier.wait().await;
+                Ok(ToolOutput::new("ok"))
+            }
+        },
+    );
+    let model = Arc::new(ScriptedModel::new([
+        tool_response(vec![
+            call("call_1", "barrier", json!({})),
+            call("call_2", "barrier", json!({})),
+        ]),
+        text_response("parallel done"),
+    ]));
+    let agent = Agent::builder(model.clone())
+        .tool(tool)
+        .tool_concurrency(ToolConcurrency::Parallel)
+        .build()
+        .unwrap();
+
+    let output = tokio::time::timeout(Duration::from_secs(1), agent.run("go"))
+        .await
+        .expect("parallel tools should not deadlock")
+        .unwrap();
+    assert_eq!(output.text, "parallel done");
+    let requests = model.requests();
+    let tool_results = requests[1]
+        .messages
+        .iter()
+        .filter(|message| message.role == kestrel::Role::Tool)
+        .count();
+    assert_eq!(tool_results, 2);
 }
 
 #[tokio::test]
